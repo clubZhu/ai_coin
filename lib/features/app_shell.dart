@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
 import '../data/mock_market_repository.dart';
+import '../data/position_repository.dart';
 import 'ai/ai_page.dart';
 import 'home/home_page.dart';
 import 'journal/review_page.dart';
@@ -10,7 +11,9 @@ import 'profile/profile_page.dart';
 import 'risk/risk_page.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  const AppShell({super.key, this.positionRepository});
+
+  final PositionRepository? positionRepository;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -18,6 +21,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final _repository = const MockMarketRepository();
+  late final PositionRepository _positionRepository =
+      widget.positionRepository ?? LocalPositionRepository();
   int _index = 0;
 
   void _openRisk() {
@@ -36,13 +41,7 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final snapshots = _repository.snapshots;
     final pages = [
-      HomePage(
-        snapshot: snapshots.first,
-        onOpenMarket: () => setState(() => _index = 1),
-        onOpenAi: () => setState(() => _index = 2),
-        onOpenRisk: _openRisk,
-        onOpenReview: _openReview,
-      ),
+      HomePage(snapshots: snapshots, positionRepository: _positionRepository),
       MarketPage(snapshots: snapshots),
       AiPage(
         snapshots: snapshots,
