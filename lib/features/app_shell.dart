@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
+import '../data/live_price_service.dart';
 import '../data/mock_market_repository.dart';
 import '../data/position_repository.dart';
 import 'ai/ai_page.dart';
@@ -11,9 +12,10 @@ import 'profile/profile_page.dart';
 import 'risk/risk_page.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, this.positionRepository});
+  const AppShell({super.key, this.positionRepository, this.livePriceService});
 
   final PositionRepository? positionRepository;
+  final LivePriceService? livePriceService;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -23,6 +25,8 @@ class _AppShellState extends State<AppShell> {
   final _repository = const MockMarketRepository();
   late final PositionRepository _positionRepository =
       widget.positionRepository ?? LocalPositionRepository();
+  late final LivePriceService _livePriceService =
+      widget.livePriceService ?? const BinanceLivePriceService();
   int _index = 0;
 
   void _openRisk() {
@@ -41,7 +45,11 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final snapshots = _repository.snapshots;
     final pages = [
-      HomePage(snapshots: snapshots, positionRepository: _positionRepository),
+      HomePage(
+        snapshots: snapshots,
+        positionRepository: _positionRepository,
+        livePriceService: _livePriceService,
+      ),
       MarketPage(snapshots: snapshots),
       AiPage(
         snapshots: snapshots,
@@ -82,12 +90,18 @@ class _BottomNavigation extends StatelessWidget {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.line)),
+        boxShadow: [
+          BoxShadow(
+            color: Color(0x0A23314A),
+            blurRadius: 20,
+            offset: Offset(0, -4),
+          ),
+        ],
       ),
       child: SafeArea(
         top: false,
         child: SizedBox(
-          height: 70,
+          height: 76,
           child: Row(
             children: List.generate(items.length, (index) {
               final selected = index == selectedIndex;
@@ -100,46 +114,43 @@ class _BottomNavigation extends StatelessWidget {
                   child: InkWell(
                     key: ValueKey('nav-$index'),
                     onTap: () => onSelected(index),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 180),
-                          width: isAi ? 43 : 34,
-                          height: isAi ? 34 : 28,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: isAi
-                                ? (selected
-                                      ? AppColors.ink
-                                      : AppColors.tealSoft)
-                                : (selected
-                                      ? AppColors.tealSoft
-                                      : Colors.transparent),
-                            borderRadius: BorderRadius.circular(13),
-                          ),
-                          child: Icon(
-                            items[index].$1,
-                            size: 21,
-                            color: isAi && selected
-                                ? Colors.white
-                                : selected
-                                ? AppColors.teal
-                                : AppColors.muted,
-                          ),
+                    child: Center(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: 60,
+                        height: 58,
+                        decoration: BoxDecoration(
+                          color: isAi ? AppColors.tealSoft : Colors.transparent,
+                          borderRadius: BorderRadius.circular(18),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          items[index].$2,
-                          style: TextStyle(
-                            color: selected ? AppColors.ink : AppColors.muted,
-                            fontSize: 11,
-                            fontWeight: selected
-                                ? FontWeight.w700
-                                : FontWeight.w500,
-                          ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              items[index].$1,
+                              size: isAi ? 23 : 21,
+                              color: isAi
+                                  ? AppColors.teal
+                                  : selected
+                                  ? AppColors.teal
+                                  : AppColors.muted,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              items[index].$2,
+                              style: TextStyle(
+                                color: selected
+                                    ? AppColors.ink
+                                    : AppColors.muted,
+                                fontSize: 11,
+                                fontWeight: selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),

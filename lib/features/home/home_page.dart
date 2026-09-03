@@ -1,21 +1,65 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
+import '../../data/live_price_service.dart';
 import '../../data/position_repository.dart';
 import '../../domain/market_snapshot.dart';
 import '../../domain/position_record.dart';
+
+String _formatUsdt(double value) {
+  final parts = value.abs().toStringAsFixed(2).split('.');
+  final whole = formatPrice(double.parse(parts.first));
+  final sign = value > 0
+      ? '+'
+      : value < 0
+      ? '-'
+      : '';
+  return '$sign\$$whole.${parts.last}';
+}
+
+class _ThousandsSeparatorInputFormatter extends TextInputFormatter {
+  const _ThousandsSeparatorInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final raw = newValue.text.replaceAll(',', '');
+    if (raw.isEmpty) return newValue;
+    if (!RegExp(r'^\d*\.?\d*$').hasMatch(raw)) return oldValue;
+
+    final parts = raw.split('.');
+    final integer = parts.first.isEmpty ? '0' : parts.first;
+    final grouped = integer.replaceAllMapped(
+      RegExp(r'\B(?=(\d{3})+(?!\d))'),
+      (_) => ',',
+    );
+    final formatted = parts.length == 2 ? '$grouped.${parts.last}' : grouped;
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: formatted.length),
+    );
+  }
+}
+
+enum _RecordFilterValue { all, open, profit, loss }
 
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
     required this.snapshots,
     required this.positionRepository,
+    required this.livePriceService,
   });
 
   final List<MarketSnapshot> snapshots;
   final PositionRepository positionRepository;
+  final LivePriceService livePriceService;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -23,18 +67,32 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _priceController = TextEditingController();
+  final _amountController = TextEditingController(text: '100');
   final _scrollController = ScrollController();
   final List<PositionRecord> _records = [];
 
+  StreamSubscription<double>? _livePriceSubscription;
+  int _priceStreamGeneration = 0;
   int _selectedAsset = 0;
   PositionSide _side = PositionSide.long;
   double _stopLossPercent = 2;
   double _takeProfitPercent = 10;
+  int _leverage = 5;
+  _RecordFilterValue _recordFilter = _RecordFilterValue.all;
   bool _loadingRecords = true;
+  bool _hasLivePrice = false;
+  bool _followMarketPrice = true;
+  double? _livePrice;
 
   MarketSnapshot get _snapshot => widget.snapshots[_selectedAsset];
-  double? get _entryPrice => double.tryParse(_priceController.text.trim());
-  bool get _canSubmit => (_entryPrice ?? 0) > 0;
+  double? get _entryPrice =>
+      double.tryParse(_priceController.text.replaceAll(',', '').trim());
+  double? get _amount =>
+      double.tryParse(_amountController.text.replaceAll(',', '').trim());
+  bool get _canSubmit => (_entryPrice ?? 0) > 0 && (_amount ?? 0) > 0;
+  double get _positionValue => _amount ?? 0;
+  double get _estimatedLoss => _positionValue * _stopLossPercent / 100;
+  double get _estimatedProfit => _positionValue * _takeProfitPercent / 100;
 
   double? get _stopLossPrice {
     final price = _entryPrice;
@@ -55,29 +113,69 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _fillMarketPrice();
+    _watchSelectedPrice();
     _loadRecords();
   }
 
   @override
   void dispose() {
+    _livePriceSubscription?.cancel();
     _priceController.dispose();
+    _amountController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
   void _fillMarketPrice() {
-    final price = _snapshot.price;
-    _priceController.text = price % 1 == 0
-        ? price.toStringAsFixed(0)
-        : price.toStringAsFixed(1);
+    _followMarketPrice = true;
+    final price = _livePrice;
+    if (price == null) {
+      _priceController.clear();
+    } else {
+      _setPriceText(price);
+    }
+  }
+
+  void _setPriceText(double price) {
+    final text = formatPrice(price);
+    if (_priceController.text == text) return;
+    _priceController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
   }
 
   void _selectAsset(int index) {
+    if (index == _selectedAsset) return;
     setState(() {
       _selectedAsset = index;
-      _fillMarketPrice();
+      _livePrice = null;
+      _hasLivePrice = false;
+      _followMarketPrice = true;
+      _priceController.clear();
     });
+    _watchSelectedPrice();
+  }
+
+  void _watchSelectedPrice() {
+    final generation = ++_priceStreamGeneration;
+    _livePriceSubscription?.cancel();
+    _livePriceSubscription = widget.livePriceService
+        .watchPrice(_snapshot.symbol)
+        .listen(
+          (price) {
+            if (!mounted || generation != _priceStreamGeneration) return;
+            setState(() {
+              _livePrice = price;
+              _hasLivePrice = true;
+              if (_followMarketPrice) _setPriceText(price);
+            });
+          },
+          onError: (Object _) {
+            if (!mounted || generation != _priceStreamGeneration) return;
+            setState(() => _hasLivePrice = false);
+          },
+        );
   }
 
   Future<void> _loadRecords() async {
@@ -98,7 +196,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _addRecord() async {
     final price = _entryPrice;
-    if (price == null || price <= 0) return;
+    final amount = _amount;
+    if (price == null || price <= 0 || amount == null || amount <= 0) return;
     FocusScope.of(context).unfocus();
     setState(() {
       _records.insert(
@@ -111,6 +210,8 @@ class _HomePageState extends State<HomePage> {
           stopLossPercent: _stopLossPercent,
           takeProfitPercent: _takeProfitPercent,
           createdAt: DateTime.now(),
+          positionAmount: amount,
+          leverage: _leverage,
         ),
       );
     });
@@ -159,169 +260,261 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final visibleRecords = switch (_recordFilter) {
+      _RecordFilterValue.all => _records,
+      _RecordFilterValue.open =>
+        _records
+            .where((record) => record.result == PositionResult.open)
+            .toList(),
+      _RecordFilterValue.profit =>
+        _records
+            .where((record) => record.result == PositionResult.profit)
+            .toList(),
+      _RecordFilterValue.loss =>
+        _records
+            .where((record) => record.result == PositionResult.loss)
+            .toList(),
+    };
     return PageFrame(
       controller: _scrollController,
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 34),
+      padding: const EdgeInsets.fromLTRB(22, 16, 22, 34),
       children: [
-        const _Header(),
-        const SizedBox(height: 24),
-        Text('开仓计划', style: Theme.of(context).textTheme.headlineMedium),
-        const SizedBox(height: 6),
-        Text(
-          '先算清止损与止盈价格，再确认开仓。',
-          style: Theme.of(
-            context,
-          ).textTheme.bodyMedium?.copyWith(color: AppColors.muted),
-        ),
-        const SizedBox(height: 20),
-        _AssetSelector(
-          snapshots: widget.snapshots,
-          selectedIndex: _selectedAsset,
-          onSelected: _selectAsset,
-        ),
-        const SizedBox(height: 16),
-        AppCard(
+        _HomePanel(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const _FieldLabel('开仓方向'),
-              const SizedBox(height: 9),
               _DirectionSelector(
                 side: _side,
                 onChanged: (side) => setState(() => _side = side),
               ),
-              const SizedBox(height: 20),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        _HomePanel(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Row(
                 children: [
-                  const Expanded(child: _FieldLabel('开仓价格')),
+                  _CoinSelector(
+                    snapshots: widget.snapshots,
+                    selectedIndex: _selectedAsset,
+                    onSelected: _selectAsset,
+                  ),
+                  const Spacer(),
                   TextButton.icon(
                     key: const ValueKey('use-market-price'),
                     onPressed: () => setState(_fillMarketPrice),
-                    icon: const Icon(Icons.bolt_rounded, size: 16),
-                    label: Text('使用市价 ${formatPrice(_snapshot.price)}'),
+                    icon: Icon(
+                      Icons.bolt_rounded,
+                      size: 17,
+                      color: _hasLivePrice ? AppColors.teal : AppColors.muted,
+                    ),
+                    label: Text(
+                      _livePrice == null
+                          ? '市价 --'
+                          : '${_hasLivePrice ? '实时' : '市价'} ${formatPrice(_livePrice!)}',
+                    ),
                     style: TextButton.styleFrom(
                       foregroundColor: AppColors.teal,
                       padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       visualDensity: VisualDensity.compact,
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               TextField(
                 key: const ValueKey('entry-price-input'),
                 controller: _priceController,
                 keyboardType: const TextInputType.numberWithOptions(
                   decimal: true,
                 ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-                ],
+                inputFormatters: const [_ThousandsSeparatorInputFormatter()],
                 style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.4,
                 ),
                 decoration: InputDecoration(
                   prefixText: r'$ ',
-                  suffixText: 'USDT',
-                  suffixIcon: _priceController.text.isEmpty
-                      ? null
-                      : IconButton(
-                          onPressed: () {
-                            _priceController.clear();
-                            setState(() {});
-                          },
-                          icon: const Icon(Icons.cancel_rounded, size: 18),
+                  hintText: '--',
+                  hintStyle: const TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  prefixStyle: const TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  suffix: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'USDT',
+                        style: TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
                         ),
+                      ),
+                      SizedBox(width: 6),
+                      Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppColors.muted,
+                        size: 20,
+                      ),
+                    ],
+                  ),
+                  fillColor: Color(0xFFFAFBFC),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 13,
+                  ),
                 ),
-                onChanged: (_) => setState(() {}),
+                onChanged: (_) => setState(() => _followMarketPrice = false),
+              ),
+              const SizedBox(height: 18),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const _FieldLabel('开仓数量'),
+                        const SizedBox(height: 8),
+                        TextField(
+                          key: const ValueKey('position-amount-input'),
+                          controller: _amountController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          inputFormatters: const [
+                            _ThousandsSeparatorInputFormatter(),
+                          ],
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          decoration: const InputDecoration(
+                            suffixText: 'USDT',
+                            suffixStyle: TextStyle(
+                              color: AppColors.muted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            fillColor: Color(0xFFFAFBFC),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 15,
+                              vertical: 13,
+                            ),
+                          ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _LeverageSelector(
+                      value: _leverage,
+                      onChanged: (value) => setState(() => _leverage = value),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: _TargetCard(
+                  key: const ValueKey('stop-loss-card'),
+                  title: '止损',
+                  percent: _stopLossPercent,
+                  distancePercent: _side == PositionSide.long
+                      ? -_stopLossPercent
+                      : _stopLossPercent,
+                  price: _stopLossPrice,
+                  amount: -_estimatedLoss,
+                  color: AppColors.red,
+                  softColor: AppColors.redSoft,
+                  onDecrease: () => setState(() {
+                    _stopLossPercent = (_stopLossPercent - .5).clamp(.5, 50);
+                  }),
+                  onIncrease: () => setState(() {
+                    _stopLossPercent = (_stopLossPercent + .5).clamp(.5, 50);
+                  }),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _TargetCard(
+                  key: const ValueKey('take-profit-card'),
+                  title: '止盈',
+                  percent: _takeProfitPercent,
+                  distancePercent: _side == PositionSide.long
+                      ? _takeProfitPercent
+                      : -_takeProfitPercent,
+                  price: _takeProfitPrice,
+                  amount: _estimatedProfit,
+                  color: AppColors.teal,
+                  softColor: AppColors.tealSoft,
+                  onDecrease: () => setState(() {
+                    _takeProfitPercent = (_takeProfitPercent - 1).clamp(1, 90);
+                  }),
+                  onIncrease: () => setState(() {
+                    _takeProfitPercent = (_takeProfitPercent + 1).clamp(1, 90);
+                  }),
+                ),
               ),
             ],
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: _TargetCard(
-                key: const ValueKey('stop-loss-card'),
-                title: '止损',
-                percent: _stopLossPercent,
-                price: _stopLossPrice,
-                color: AppColors.red,
-                softColor: AppColors.redSoft,
-                directionIcon: _side == PositionSide.long
-                    ? Icons.south_rounded
-                    : Icons.north_rounded,
-                onDecrease: () => setState(() {
-                  _stopLossPercent = (_stopLossPercent - .5).clamp(.5, 50);
-                }),
-                onIncrease: () => setState(() {
-                  _stopLossPercent = (_stopLossPercent + .5).clamp(.5, 50);
-                }),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _TargetCard(
-                key: const ValueKey('take-profit-card'),
-                title: '止盈',
-                percent: _takeProfitPercent,
-                price: _takeProfitPrice,
-                color: AppColors.teal,
-                softColor: AppColors.tealSoft,
-                directionIcon: _side == PositionSide.long
-                    ? Icons.north_rounded
-                    : Icons.south_rounded,
-                onDecrease: () => setState(() {
-                  _takeProfitPercent = (_takeProfitPercent - 1).clamp(1, 90);
-                }),
-                onIncrease: () => setState(() {
-                  _takeProfitPercent = (_takeProfitPercent + 1).clamp(1, 90);
-                }),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        _PlanSummary(
-          side: _side,
-          stopLossPercent: _stopLossPercent,
-          takeProfitPercent: _takeProfitPercent,
-        ),
-        const SizedBox(height: 16),
-        FilledButton.icon(
+        _AddRecordButton(
           key: const ValueKey('add-position-record'),
-          onPressed: _canSubmit ? _addRecord : null,
-          icon: const Icon(Icons.add_task_rounded, size: 19),
-          label: const Text('确认并加入开仓记录'),
+          enabled: _canSubmit,
+          onTap: _addRecord,
         ),
-        const SizedBox(height: 30),
+        const SizedBox(height: 26),
         Row(
           children: [
             Expanded(
               child: Text(
                 '开仓记录',
-                style: Theme.of(context).textTheme.titleLarge,
+                style: const TextStyle(
+                  color: AppColors.ink,
+                  fontSize: 16,
+                  height: 1.2,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.3,
+                ),
               ),
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(100),
-              ),
-              child: Text(
-                '${_records.length} 笔',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
+            _RecordFilter(
+              value: _recordFilter,
+              onChanged: (value) => setState(() => _recordFilter = value),
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 14),
         if (_loadingRecords)
-          const AppCard(
+          const _HomePanel(
             child: Center(
               child: SizedBox(
                 width: 22,
@@ -330,16 +523,20 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           )
-        else if (_records.isEmpty)
-          const _EmptyRecords()
+        else if (visibleRecords.isEmpty)
+          _EmptyRecords(filtered: _recordFilter != _RecordFilterValue.all)
         else
           ...List.generate(
-            _records.length,
+            visibleRecords.length,
             (index) => Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: _RecordCard(
-                record: _records[index],
-                onEdit: () => _editRecord(index),
+                record: visibleRecords[index],
+                onEdit: () => _editRecord(
+                  _records.indexWhere(
+                    (record) => record.id == visibleRecords[index].id,
+                  ),
+                ),
               ),
             ),
           ),
@@ -348,39 +545,86 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header();
+class _HomePanel extends StatelessWidget {
+  const _HomePanel({required this.child});
+
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-            color: AppColors.ink,
-            borderRadius: BorderRadius.circular(13),
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A23314A),
+            blurRadius: 24,
+            offset: Offset(0, 8),
           ),
-          child: const Icon(
-            Icons.explore_rounded,
-            color: Colors.white,
-            size: 23,
-          ),
+        ],
+      ),
+      child: child,
+    );
+  }
+}
+
+class _CoinSelector extends StatelessWidget {
+  const _CoinSelector({
+    required this.snapshots,
+    required this.selectedIndex,
+    required this.onSelected,
+  });
+
+  final List<MarketSnapshot> snapshots;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<int>(
+      key: const ValueKey('coin-selector'),
+      initialValue: selectedIndex,
+      onSelected: onSelected,
+      color: AppColors.surface,
+      position: PopupMenuPosition.under,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      itemBuilder: (context) => List.generate(
+        snapshots.length,
+        (index) => PopupMenuItem<int>(
+          value: index,
+          child: Text('${snapshots[index].symbol}/USDT'),
         ),
-        const SizedBox(width: 10),
-        const Text(
-          'CryptoPilot',
-          style: TextStyle(
-            color: AppColors.ink,
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -.3,
-          ),
+      ),
+      child: Container(
+        height: 30,
+        padding: const EdgeInsets.only(left: 9, right: 5),
+        decoration: BoxDecoration(
+          color: AppColors.background,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.line),
         ),
-        const Spacer(),
-        const StatusPill(label: '计划工具', icon: Icons.calculate_outlined),
-      ],
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              snapshots[selectedIndex].symbol,
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 1),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppColors.muted,
+              size: 16,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -394,98 +638,11 @@ class _FieldLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-    );
-  }
-}
-
-class _AssetSelector extends StatelessWidget {
-  const _AssetSelector({
-    required this.snapshots,
-    required this.selectedIndex,
-    required this.onSelected,
-  });
-
-  final List<MarketSnapshot> snapshots;
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: List.generate(snapshots.length, (index) {
-        final snapshot = snapshots[index];
-        final selected = selectedIndex == index;
-        return Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(
-              right: index == snapshots.length - 1 ? 0 : 10,
-            ),
-            child: Material(
-              color: selected ? AppColors.ink : AppColors.surface,
-              borderRadius: BorderRadius.circular(18),
-              child: InkWell(
-                key: ValueKey('home-asset-${snapshot.symbol}'),
-                borderRadius: BorderRadius.circular(18),
-                onTap: () => onSelected(index),
-                child: Padding(
-                  padding: const EdgeInsets.all(15),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 34,
-                        height: 34,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? Colors.white.withValues(alpha: .12)
-                              : AppColors.tealSoft,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          snapshot.symbol == 'BTC' ? '₿' : 'Ξ',
-                          style: TextStyle(
-                            color: selected ? Colors.white : AppColors.teal,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              snapshot.symbol,
-                              style: TextStyle(
-                                color: selected ? Colors.white : AppColors.ink,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            Text(
-                              r'$' + formatPrice(snapshot.price),
-                              maxLines: 1,
-                              overflow: TextOverflow.fade,
-                              softWrap: false,
-                              style: TextStyle(
-                                color: selected
-                                    ? Colors.white.withValues(alpha: .58)
-                                    : AppColors.muted,
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      }),
+      style: const TextStyle(
+        fontSize: 14,
+        height: 1.3,
+        fontWeight: FontWeight.w600,
+      ),
     );
   }
 }
@@ -498,64 +655,111 @@ class _DirectionSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(15),
-      ),
-      child: Row(
-        children: PositionSide.values.map((value) {
-          final selected = value == side;
-          final isLong = value == PositionSide.long;
-          return Expanded(
+    return Row(
+      children: PositionSide.values.map((value) {
+        final selected = value == side;
+        final isLong = value == PositionSide.long;
+        final activeColor = isLong ? AppColors.teal : AppColors.red;
+        return Expanded(
+          child: Padding(
+            padding: EdgeInsets.only(
+              right: value == PositionSide.long ? 10 : 0,
+            ),
             child: GestureDetector(
               key: ValueKey('direction-${value.name}'),
               onTap: () => onChanged(value),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 160),
-                height: 44,
+                height: 52,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: selected ? AppColors.surface : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: selected
-                      ? const [
-                          BoxShadow(
-                            color: Color(0x0F000000),
-                            blurRadius: 8,
-                            offset: Offset(0, 2),
-                          ),
-                        ]
-                      : null,
+                  color: selected
+                      ? activeColor.withValues(alpha: .08)
+                      : const Color(0xFFF8F9FB),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: selected
+                        ? activeColor.withValues(alpha: .22)
+                        : Colors.transparent,
+                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
                       isLong ? Icons.north_rounded : Icons.south_rounded,
-                      size: 17,
-                      color: selected
-                          ? (isLong ? AppColors.teal : AppColors.red)
-                          : AppColors.muted,
+                      size: 21,
+                      color: selected ? activeColor : AppColors.muted,
                     ),
-                    const SizedBox(width: 5),
+                    const SizedBox(width: 8),
                     Text(
                       isLong ? '做多' : '做空',
                       style: TextStyle(
-                        color: selected ? AppColors.ink : AppColors.muted,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w500,
+                        color: selected ? activeColor : AppColors.muted,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-          );
-        }).toList(),
-      ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _LeverageSelector extends StatelessWidget {
+  const _LeverageSelector({required this.value, required this.onChanged});
+
+  final int value;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    const options = [1, 2, 3, 5, 10, 20, 50, 100, 125];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _FieldLabel('杠杆'),
+        const SizedBox(height: 8),
+        Container(
+          height: 52,
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFAFBFC),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.line),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              key: const ValueKey('leverage-selector'),
+              value: value,
+              isExpanded: true,
+              borderRadius: BorderRadius.circular(16),
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+              items: options
+                  .map(
+                    (option) => DropdownMenuItem<int>(
+                      value: option,
+                      child: Text('${option}X'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (selected) {
+                if (selected != null) onChanged(selected);
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -565,20 +769,22 @@ class _TargetCard extends StatelessWidget {
     super.key,
     required this.title,
     required this.percent,
+    required this.distancePercent,
     required this.price,
+    required this.amount,
     required this.color,
     required this.softColor,
-    required this.directionIcon,
     required this.onDecrease,
     required this.onIncrease,
   });
 
   final String title;
   final double percent;
+  final double distancePercent;
   final double? price;
+  final double amount;
   final Color color;
   final Color softColor;
-  final IconData directionIcon;
   final VoidCallback onDecrease;
   final VoidCallback onIncrease;
 
@@ -588,51 +794,52 @@ class _TargetCard extends StatelessWidget {
         ? percent.toStringAsFixed(0)
         : percent.toStringAsFixed(1);
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: .14)),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A23314A),
+            blurRadius: 24,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  color: softColor,
-                  shape: BoxShape.circle,
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
                 ),
-                child: Icon(directionIcon, color: color, size: 17),
               ),
-              const SizedBox(width: 8),
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-            ],
-          ),
-          const SizedBox(height: 17),
-          Row(
-            children: [
+              const Spacer(),
               _StepButton(
                 key: ValueKey('$title-decrease'),
                 icon: Icons.remove_rounded,
                 onTap: onDecrease,
               ),
-              Expanded(
+              const SizedBox(width: 2),
+              SizedBox(
+                width: 36,
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
                   child: Text(
                     '$percentText%',
                     style: TextStyle(
                       color: color,
-                      fontSize: 21,
-                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ),
               ),
+              const SizedBox(width: 2),
               _StepButton(
                 key: ValueKey('$title-increase'),
                 icon: Icons.add_rounded,
@@ -640,16 +847,53 @@ class _TargetCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 18),
-          Text('目标价格', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 16),
+          Text(
+            _formatUsdt(amount),
+            key: ValueKey('$title-amount'),
+            style: TextStyle(
+              color: color,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -.25,
+            ),
+          ),
           const SizedBox(height: 4),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 180),
             child: Text(
-              price == null ? '--' : r'$' + formatPrice(price!),
+              price == null ? '价格 --' : '价格 ${formatPrice(price!)} USDT',
               key: ValueKey(price),
               maxLines: 1,
-              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
+            decoration: BoxDecoration(
+              color: softColor,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.gps_fixed_rounded, color: color, size: 13),
+                const SizedBox(width: 5),
+                Flexible(
+                  child: Text(
+                    '距离当前 ${distancePercent > 0 ? '+' : ''}${distancePercent.toStringAsFixed(2)}%',
+                    maxLines: 1,
+                    overflow: TextOverflow.fade,
+                    softWrap: false,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -673,79 +917,177 @@ class _StepButton extends StatelessWidget {
         customBorder: const CircleBorder(),
         onTap: onTap,
         child: SizedBox(
-          width: 30,
-          height: 30,
-          child: Icon(icon, size: 18, color: AppColors.ink),
+          width: 25,
+          height: 25,
+          child: Icon(icon, size: 15, color: AppColors.ink),
         ),
       ),
     );
   }
 }
 
-class _PlanSummary extends StatelessWidget {
-  const _PlanSummary({
-    required this.side,
-    required this.stopLossPercent,
-    required this.takeProfitPercent,
+class _AddRecordButton extends StatelessWidget {
+  const _AddRecordButton({
+    super.key,
+    required this.enabled,
+    required this.onTap,
   });
 
-  final PositionSide side;
-  final double stopLossPercent;
-  final double takeProfitPercent;
+  final bool enabled;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final ratio = takeProfitPercent / stopLossPercent;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-      decoration: BoxDecoration(
-        color: AppColors.amberSoft,
-        borderRadius: BorderRadius.circular(16),
+    return Opacity(
+      opacity: enabled ? 1 : .45,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF0B8F80), Color(0xFF0A8277)],
+          ),
+          borderRadius: BorderRadius.circular(19),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x33147D73),
+              blurRadius: 18,
+              offset: Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(19),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(19),
+            child: const SizedBox(
+              height: 46,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.add_circle_outline_rounded, color: Colors.white),
+                  SizedBox(width: 9),
+                  Text(
+                    '加入开仓记录',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.balance_rounded, color: AppColors.amber, size: 20),
-          const SizedBox(width: 10),
-          Text(
-            '盈亏比  1 : ${ratio.toStringAsFixed(1)}',
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
-          ),
-          const Spacer(),
-          Text(
-            side == PositionSide.long ? '做多计划' : '做空计划',
-            style: const TextStyle(color: AppColors.muted, fontSize: 12),
-          ),
-        ],
+    );
+  }
+}
+
+class _RecordFilter extends StatelessWidget {
+  const _RecordFilter({required this.value, required this.onChanged});
+
+  final _RecordFilterValue value;
+  final ValueChanged<_RecordFilterValue> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = switch (value) {
+      _RecordFilterValue.all => '全部',
+      _RecordFilterValue.open => '持仓',
+      _RecordFilterValue.profit => '盈利',
+      _RecordFilterValue.loss => '亏损',
+    };
+    return PopupMenuButton<_RecordFilterValue>(
+      key: const ValueKey('record-filter'),
+      initialValue: value,
+      onSelected: onChanged,
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      itemBuilder: (context) => const [
+        PopupMenuItem(value: _RecordFilterValue.all, child: Text('全部')),
+        PopupMenuItem(value: _RecordFilterValue.open, child: Text('持仓')),
+        PopupMenuItem(value: _RecordFilterValue.profit, child: Text('盈利')),
+        PopupMenuItem(value: _RecordFilterValue.loss, child: Text('亏损')),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0A23314A),
+              blurRadius: 18,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 7),
+            const Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: AppColors.muted,
+              size: 19,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _EmptyRecords extends StatelessWidget {
-  const _EmptyRecords();
+  const _EmptyRecords({required this.filtered});
+
+  final bool filtered;
 
   @override
   Widget build(BuildContext context) {
-    return AppCard(
-      child: Column(
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: const BoxDecoration(
-              color: AppColors.tealSoft,
-              shape: BoxShape.circle,
+    return _HomePanel(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(
+                  Icons.assignment_outlined,
+                  color: Color(0xFFC8D0E2),
+                  size: 46,
+                ),
+                Positioned(
+                  left: -8,
+                  top: 2,
+                  child: Icon(
+                    Icons.add_rounded,
+                    color: AppColors.teal.withValues(alpha: .28),
+                    size: 17,
+                  ),
+                ),
+              ],
             ),
-            child: const Icon(
-              Icons.receipt_long_outlined,
-              color: AppColors.teal,
+            const SizedBox(height: 12),
+            Text(
+              filtered ? '没有符合条件的记录' : '暂无开仓记录',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
-          ),
-          const SizedBox(height: 13),
-          const Text('还没有开仓记录', style: TextStyle(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text('设置好计划后，点击上方按钮加入', style: Theme.of(context).textTheme.bodySmall),
-        ],
+            const SizedBox(height: 7),
+            Text(
+              filtered ? '切换筛选条件查看其他记录' : '添加第一笔开仓记录，开始追踪你的交易。',
+              style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -773,7 +1115,7 @@ class _RecordCard extends StatelessWidget {
     final time =
         '${record.createdAt.hour.toString().padLeft(2, '0')}:${record.createdAt.minute.toString().padLeft(2, '0')}';
 
-    return AppCard(
+    return _HomePanel(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -791,8 +1133,8 @@ class _RecordCard extends StatelessWidget {
                   record.symbol == 'BTC' ? '₿' : 'Ξ',
                   style: const TextStyle(
                     color: AppColors.teal,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
@@ -805,8 +1147,8 @@ class _RecordCard extends StatelessWidget {
                       Text(
                         record.symbol,
                         style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                       const SizedBox(width: 7),
@@ -841,33 +1183,38 @@ class _RecordCard extends StatelessWidget {
                   style: TextStyle(
                     color: resultColor,
                     fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 14),
+          Text(
+            '开仓 \$${formatPrice(record.entryPrice)}  ·  ${formatPrice(record.positionAmount)} USDT  ·  ${record.leverage}X',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 14),
+          const Divider(height: 1),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
-                child: Metric(
-                  label: '开仓价格',
-                  value: r'$' + formatPrice(record.entryPrice),
-                ),
-              ),
-              Expanded(
-                child: Metric(
+                child: _RecordTarget(
                   label: '止损 ${_percent(record.stopLossPercent)}',
-                  value: r'$' + formatPrice(record.stopLossPrice),
-                  valueColor: AppColors.red,
+                  amount: -record.estimatedLoss,
+                  price: record.stopLossPrice,
+                  color: AppColors.red,
                 ),
               ),
+              Container(width: 1, height: 46, color: AppColors.line),
+              const SizedBox(width: 16),
               Expanded(
-                child: Metric(
+                child: _RecordTarget(
                   label: '止盈 ${_percent(record.takeProfitPercent)}',
-                  value: r'$' + formatPrice(record.takeProfitPrice),
-                  valueColor: AppColors.teal,
+                  amount: record.estimatedProfit,
+                  price: record.takeProfitPrice,
+                  color: AppColors.teal,
                 ),
               ),
             ],
@@ -880,23 +1227,47 @@ class _RecordCard extends StatelessWidget {
                 color: resultColor.withValues(alpha: .08),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: Row(
+              child: Column(
                 children: [
-                  Text('实际结果', style: Theme.of(context).textTheme.bodySmall),
-                  const Spacer(),
-                  if (record.closePrice != null) ...[
-                    Text(
-                      r'$' + formatPrice(record.closePrice!),
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    const SizedBox(width: 10),
-                  ],
-                  Text(
-                    '${(record.realizedPercent ?? 0) > 0 ? '+' : ''}${(record.realizedPercent ?? 0).toStringAsFixed(1)}%',
-                    style: TextStyle(
-                      color: resultColor,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        '实际结果',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const Spacer(),
+                      Text(
+                        _formatUsdt(record.realizedAmount ?? 0),
+                        style: TextStyle(
+                          color: resultColor,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 5),
+                  Row(
+                    children: [
+                      Text(
+                        '平仓价格',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const Spacer(),
+                      if (record.closePrice != null)
+                        Text(
+                          r'$' + formatPrice(record.closePrice!),
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      const SizedBox(width: 10),
+                      Text(
+                        '${(record.realizedPercent ?? 0) > 0 ? '+' : ''}${(record.realizedPercent ?? 0).toStringAsFixed(1)}%',
+                        style: TextStyle(
+                          color: resultColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -929,6 +1300,44 @@ class _RecordCard extends StatelessWidget {
         ? value.toStringAsFixed(0)
         : value.toStringAsFixed(1);
     return '$text%';
+  }
+}
+
+class _RecordTarget extends StatelessWidget {
+  const _RecordTarget({
+    required this.label,
+    required this.amount,
+    required this.price,
+    required this.color,
+  });
+
+  final String label;
+  final double amount;
+  final double price;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
+        const SizedBox(height: 3),
+        Text(
+          _formatUsdt(amount),
+          style: TextStyle(
+            color: color,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '\$${formatPrice(price)}',
+          style: const TextStyle(color: AppColors.muted, fontSize: 11),
+        ),
+      ],
+    );
   }
 }
 

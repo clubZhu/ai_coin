@@ -11,6 +11,8 @@ class PositionRecord {
     required this.stopLossPercent,
     required this.takeProfitPercent,
     required this.createdAt,
+    this.positionAmount = 100,
+    this.leverage = 5,
     this.result = PositionResult.open,
     this.realizedPercent,
     this.closePrice,
@@ -28,6 +30,11 @@ class PositionRecord {
       stopLossPercent: (json['stopLossPercent'] as num).toDouble(),
       takeProfitPercent: (json['takeProfitPercent'] as num).toDouble(),
       createdAt: DateTime.parse(json['createdAt'] as String),
+      positionAmount:
+          (json['positionAmount'] as num?)?.toDouble() ??
+          ((json['marginAmount'] as num?)?.toDouble() ?? 20) *
+              ((json['leverage'] as num?)?.toInt() ?? 5),
+      leverage: (json['leverage'] as num?)?.toInt() ?? 5,
       result: PositionResult.values.firstWhere(
         (value) => value.name == json['result'],
         orElse: () => PositionResult.open,
@@ -44,6 +51,8 @@ class PositionRecord {
   final double stopLossPercent;
   final double takeProfitPercent;
   final DateTime createdAt;
+  final double positionAmount;
+  final int leverage;
   final PositionResult result;
   final double? realizedPercent;
   final double? closePrice;
@@ -56,6 +65,15 @@ class PositionRecord {
       ? entryPrice * (1 + takeProfitPercent / 100)
       : entryPrice * (1 - takeProfitPercent / 100);
 
+  double get positionValue => positionAmount;
+
+  double get estimatedLoss => positionValue * stopLossPercent / 100;
+
+  double get estimatedProfit => positionValue * takeProfitPercent / 100;
+
+  double? get realizedAmount =>
+      realizedPercent == null ? null : positionValue * realizedPercent! / 100;
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -65,6 +83,8 @@ class PositionRecord {
       'stopLossPercent': stopLossPercent,
       'takeProfitPercent': takeProfitPercent,
       'createdAt': createdAt.toIso8601String(),
+      'positionAmount': positionAmount,
+      'leverage': leverage,
       'result': result.name,
       'realizedPercent': realizedPercent,
       'closePrice': closePrice,
@@ -86,6 +106,8 @@ class PositionRecord {
       stopLossPercent: stopLossPercent,
       takeProfitPercent: takeProfitPercent,
       createdAt: createdAt,
+      positionAmount: positionAmount,
+      leverage: leverage,
       result: result ?? this.result,
       realizedPercent: clearRealizedPercent
           ? null

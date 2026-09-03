@@ -1,18 +1,51 @@
+import 'dart:async';
+
 import 'package:ai_coin/app.dart';
+import 'package:ai_coin/data/live_price_service.dart';
 import 'package:ai_coin/data/position_repository.dart';
 import 'package:ai_coin/domain/position_record.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+class _TestLivePriceService implements LivePriceService {
+  final Map<String, StreamController<double>> _controllers = {};
+
+  @override
+  Stream<double> watchPrice(String symbol) {
+    return _controllers
+        .putIfAbsent(
+          symbol,
+          () => StreamController<double>.broadcast(sync: true),
+        )
+        .stream;
+  }
+
+  void emit(String symbol, double price) {
+    _controllers
+        .putIfAbsent(
+          symbol,
+          () => StreamController<double>.broadcast(sync: true),
+        )
+        .add(price);
+  }
+}
+
 void main() {
-  Future<void> launchApp(WidgetTester tester) async {
+  Future<void> launchApp(
+    WidgetTester tester, {
+    LivePriceService? livePriceService,
+  }) async {
+    final service = livePriceService ?? _TestLivePriceService();
     SharedPreferences.setMockInitialValues({});
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(const CryptoPilotApp());
+    await tester.pumpWidget(CryptoPilotApp(livePriceService: service));
+    if (livePriceService == null) {
+      (service as _TestLivePriceService).emit('BTC', 77312);
+    }
     await tester.pumpAndSettle();
   }
 
@@ -27,6 +60,8 @@ void main() {
       stopLossPercent: 2,
       takeProfitPercent: 10,
       createdAt: DateTime(2026, 9, 3, 10, 30),
+      positionAmount: 200,
+      leverage: 10,
       result: PositionResult.profit,
       realizedPercent: 8.5,
       closePrice: 84000,
@@ -40,16 +75,97 @@ void main() {
     expect(loaded.single.result, PositionResult.profit);
     expect(loaded.single.realizedPercent, 8.5);
     expect(loaded.single.closePrice, 84000);
+    expect(loaded.single.positionAmount, 200);
+    expect(loaded.single.leverage, 10);
+    expect(loaded.single.positionValue, 200);
   });
 
   testWidgets('首页展示开仓计算工具和默认目标价格', (tester) async {
     await launchApp(tester);
 
-    expect(find.text('CryptoPilot'), findsOneWidget);
-    expect(find.text('开仓计划'), findsOneWidget);
-    expect(find.text('先算清止损与止盈价格，再确认开仓。'), findsOneWidget);
-    expect(find.text(r'$75,766'), findsOneWidget);
-    expect(find.text(r'$85,043'), findsOneWidget);
+    expect(
+      find.text('开仓'),
+      findsOneWidget,
+      reason: tester.allWidgets
+          .whereType<Text>()
+          .map((widget) => widget.data)
+          .whereType<String>()
+          .join(' | '),
+    );
+    expect(find.text('仓位计算器'), findsOneWidget);
+    expect(find.text(r'-$2.00'), findsOneWidget);
+    expect(find.text(r'+$10.00'), findsOneWidget);
+    expect(find.text('价格 75,766 USDT'), findsOneWidget);
+    expect(find.text('价格 85,043 USDT'), findsOneWidget);
+  });
+
+  testWidgets('开仓数量按已加杠杆的实际数量计算盈亏', (tester) async {
+    await launchApp(tester);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('position-amount-input')),
+      '200',
+    );
+    await tester.tap(find.byKey(const ValueKey('leverage-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('10X').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('10X'), findsOneWidget);
+    expect(find.text(r'-$4.00'), findsOneWidget);
+    expect(find.text(r'+$20.00'), findsOneWidget);
+  });
+
+  testWidgets('可以切换币种并跟随币安实时价格', (tester) async {
+    final livePrices = _TestLivePriceService();
+    await launchApp(tester, livePriceService: livePrices);
+
+    var priceField = tester.widget<TextField>(
+      find.byKey(const ValueKey('entry-price-input')),
+    );
+    expect(priceField.controller?.text, isEmpty);
+    expect(find.text('市价 --'), findsOneWidget);
+    expect(find.text('价格 --'), findsNWidgets(2));
+
+    livePrices.emit('BTC', 80000);
+    await tester.pump();
+    priceField = tester.widget<TextField>(
+      find.byKey(const ValueKey('entry-price-input')),
+    );
+    expect(priceField.controller?.text, '80,000');
+    expect(find.text('实时 80,000'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('coin-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ETH/USDT'));
+    await tester.pumpAndSettle();
+    livePrices.emit('ETH', 4000);
+    await tester.pump();
+
+    priceField = tester.widget<TextField>(
+      find.byKey(const ValueKey('entry-price-input')),
+    );
+    expect(priceField.controller?.text, '4,000');
+    expect(find.text('价格 3,920 USDT'), findsOneWidget);
+    expect(find.text('价格 4,400 USDT'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('entry-price-input')),
+      '4100',
+    );
+    livePrices.emit('ETH', 4200);
+    await tester.pump();
+    priceField = tester.widget<TextField>(
+      find.byKey(const ValueKey('entry-price-input')),
+    );
+    expect(priceField.controller?.text, '4,100');
+
+    await tester.tap(find.byKey(const ValueKey('use-market-price')));
+    await tester.pump();
+    priceField = tester.widget<TextField>(
+      find.byKey(const ValueKey('entry-price-input')),
+    );
+    expect(priceField.controller?.text, '4,200');
   });
 
   testWidgets('止损止盈比例可以动态调整', (tester) async {
@@ -65,7 +181,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('2.5%'), findsOneWidget);
-    expect(find.text(r'$75,379'), findsOneWidget);
+    expect(find.text('价格 75,379 USDT'), findsOneWidget);
   });
 
   testWidgets('可以新增开仓记录并编辑盈利结果', (tester) async {
@@ -82,7 +198,7 @@ void main() {
     await tester.tap(addButton);
     await tester.pumpAndSettle();
 
-    expect(find.text('1 笔'), findsOneWidget);
+    expect(find.text('暂无开仓记录'), findsNothing);
     final editButton = find.text('记录盈亏结果');
     await tester.scrollUntilVisible(
       editButton,
@@ -106,7 +222,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('盈利'), findsOneWidget);
-    expect(find.text('+8.5%'), findsOneWidget);
+    expect(find.textContaining('+8.5%'), findsOneWidget);
     expect(find.text(r'$84,000'), findsOneWidget);
   });
 
