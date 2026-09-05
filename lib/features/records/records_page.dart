@@ -33,6 +33,13 @@ class _RecordsPageState extends State<RecordsPage> {
 
   _RecordFilterValue _recordFilter = _RecordFilterValue.all;
   bool _loadingRecords = true;
+  final Set<String> _expandedRecordIds = {};
+
+  void _toggleRecordExpanded(String id) {
+    setState(() {
+      if (!_expandedRecordIds.add(id)) _expandedRecordIds.remove(id);
+    });
+  }
 
   double? get _totalUnrealized {
     var total = 0.0;
@@ -99,6 +106,29 @@ class _RecordsPageState extends State<RecordsPage> {
         if (!mounted) return;
         setState(() => _livePrices[symbol] = price);
       }, onError: (Object _) {});
+    }
+  }
+
+  Future<void> _confirmDeleteRecord(PositionRecord record) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => _DeleteRecordDialog(record: record),
+    );
+    if (confirmed != true || !mounted) return;
+    final index = _records.indexWhere((item) => item.id == record.id);
+    if (index < 0) return;
+    setState(() {
+      _records.removeAt(index);
+      _expandedRecordIds.remove(record.id);
+    });
+    _watchLivePrices();
+    try {
+      await widget.positionRepository.save(_records);
+    } on Exception {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('记录已删除，但本机保存失败，请稍后重试')));
     }
   }
 
@@ -194,11 +224,17 @@ class _RecordsPageState extends State<RecordsPage> {
                 child: _RecordCard(
                   record: visibleRecords[index],
                   currentPrice: _livePrices[visibleRecords[index].symbol],
+                  expanded: _expandedRecordIds.contains(
+                    visibleRecords[index].id,
+                  ),
+                  onToggle: () =>
+                      _toggleRecordExpanded(visibleRecords[index].id),
                   onEdit: () => _editRecord(
                     _records.indexWhere(
                       (record) => record.id == visibleRecords[index].id,
                     ),
                   ),
+                  onDelete: () => _confirmDeleteRecord(visibleRecords[index]),
                 ),
               ),
             ),
@@ -425,12 +461,18 @@ class _EmptyRecords extends StatelessWidget {
 class _RecordCard extends StatelessWidget {
   const _RecordCard({
     required this.record,
+    required this.expanded,
+    required this.onToggle,
     required this.onEdit,
+    required this.onDelete,
     this.currentPrice,
   });
 
   final PositionRecord record;
+  final bool expanded;
+  final VoidCallback onToggle;
   final VoidCallback onEdit;
+  final VoidCallback onDelete;
   final double? currentPrice;
 
   @override
@@ -457,169 +499,194 @@ class _RecordCard extends StatelessWidget {
               : record.unrealizedPercent(currentPrice!))
         : record.realizedPercent;
 
-    return _RecordPanel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return GestureDetector(
+      key: ValueKey('record-card-${record.id}'),
+      onTap: onToggle,
+      onLongPress: onDelete,
+      child: _RecordPanel(
+        child: AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 36,
-                height: 36,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  TradingAssets.glyph(record.symbol),
-                  style: const TextStyle(
-                    color: AppColors.ink,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w500,
+              Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      TradingAssets.glyph(record.symbol),
+                      style: const TextStyle(
+                        color: AppColors.ink,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Flexible(
-                          child: Text(
-                            record.symbol,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: AppColors.ink,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                record.symbol,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: AppColors.ink,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                             ),
-                          ),
+                            const SizedBox(width: 8),
+                            Text(
+                              isLong ? '做多 ↑' : '做空 ↓',
+                              style: TextStyle(
+                                color: sideColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
+                        const SizedBox(height: 2),
                         Text(
-                          isLong ? '做多 ↑' : '做空 ↓',
-                          style: TextStyle(
-                            color: sideColor,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w500,
-                          ),
+                          _createdAtLabel(record.createdAt),
+                          style: _recordCaptionStyle,
                         ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _createdAtLabel(record.createdAt),
-                      style: _recordCaptionStyle,
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: resultColor.withValues(alpha: .07),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      resultLabel,
+                      style: TextStyle(
+                        color: resultColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  AnimatedRotation(
+                    turns: expanded ? .5 : 0,
+                    duration: const Duration(milliseconds: 180),
+                    child: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: AppColors.muted,
+                      size: 18,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _RecordResult(
+                label: isOpen ? '浮动盈亏' : '实际结果',
+                amount: amount,
+                percent: percent,
+                priceLabel: isOpen ? '当前价格' : '平仓价格',
+                price: isOpen ? currentPrice : record.closePrice,
+              ),
+              if (expanded) ...[
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 5,
+                      child: _RecordMeta(
+                        label: '开仓价格',
+                        value: '\$' + formatPrice(record.entryPrice),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 5,
+                      child: _RecordMeta(
+                        label: '开仓数量',
+                        value: '${formatPrice(record.positionAmount)} USDT',
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 2,
+                      child: _RecordMeta(
+                        label: '杠杆',
+                        value: '${record.leverage}X',
+                        alignment: CrossAxisAlignment.end,
+                      ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                decoration: BoxDecoration(
-                  color: resultColor.withValues(alpha: .07),
-                  borderRadius: BorderRadius.circular(8),
+                const SizedBox(height: 14),
+                const Divider(height: 1, thickness: .5, color: AppColors.line),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _RecordTarget(
+                        label: '止损 ${_percent(record.stopLossPercent)}',
+                        amount: -record.estimatedLoss,
+                        price: record.stopLossPrice,
+                        color: AppColors.red,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: _RecordTarget(
+                        label: '止盈 ${_percent(record.takeProfitPercent)}',
+                        amount: record.estimatedProfit,
+                        price: record.takeProfitPrice,
+                        color: AppColors.teal,
+                      ),
+                    ),
+                  ],
                 ),
-                child: Text(
-                  resultLabel,
-                  style: TextStyle(
-                    color: resultColor,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: ValueKey('edit-record-${record.id}'),
+                    onPressed: onEdit,
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(0, 36),
+                      foregroundColor: AppColors.teal,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      textStyle: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    icon: const Icon(Icons.edit_outlined, size: 15),
+                    label: Text(isOpen ? '记录盈亏结果' : '编辑结果'),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
-          const SizedBox(height: 14),
-          _RecordResult(
-            label: isOpen ? '浮动盈亏' : '实际结果',
-            amount: amount,
-            percent: percent,
-            priceLabel: isOpen ? '当前价格' : '平仓价格',
-            price: isOpen ? currentPrice : record.closePrice,
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                flex: 5,
-                child: _RecordMeta(
-                  label: '开仓价格',
-                  value: '\$' + formatPrice(record.entryPrice),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                flex: 5,
-                child: _RecordMeta(
-                  label: '开仓数量',
-                  value: '${formatPrice(record.positionAmount)} USDT',
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                flex: 2,
-                child: _RecordMeta(
-                  label: '杠杆',
-                  value: '${record.leverage}X',
-                  alignment: CrossAxisAlignment.end,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          const Divider(height: 1, thickness: .5, color: AppColors.line),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _RecordTarget(
-                  label: '止损 ${_percent(record.stopLossPercent)}',
-                  amount: -record.estimatedLoss,
-                  price: record.stopLossPrice,
-                  color: AppColors.red,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _RecordTarget(
-                  label: '止盈 ${_percent(record.takeProfitPercent)}',
-                  amount: record.estimatedProfit,
-                  price: record.takeProfitPrice,
-                  color: AppColors.teal,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              key: ValueKey('edit-record-${record.id}'),
-              onPressed: onEdit,
-              style: TextButton.styleFrom(
-                minimumSize: const Size(0, 36),
-                foregroundColor: AppColors.teal,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                textStyle: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              icon: const Icon(Icons.edit_outlined, size: 15),
-              label: Text(isOpen ? '记录盈亏结果' : '编辑结果'),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -820,6 +887,105 @@ class _RecordTarget extends StatelessWidget {
           child: Text('\$${formatPrice(price)}', style: _recordCaptionStyle),
         ),
       ],
+    );
+  }
+}
+
+class _DeleteRecordDialog extends StatelessWidget {
+  const _DeleteRecordDialog({required this.record});
+
+  final PositionRecord record;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '删除这条记录？',
+              style: TextStyle(
+                color: AppColors.ink,
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${record.symbol} · ${record.side == PositionSide.long ? '做多' : '做空'} · '
+              '开仓 \$${formatPrice(record.entryPrice)}，删除后无法恢复。',
+              style: _recordCaptionStyle.copyWith(fontSize: 13),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    child: Material(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(13),
+                      child: InkWell(
+                        onTap: () => Navigator.of(context).pop(false),
+                        borderRadius: BorderRadius.circular(13),
+                        child: SizedBox(
+                          height: 44,
+                          child: Center(
+                            child: Text(
+                              '取消',
+                              style: const TextStyle(
+                                color: AppColors.muted,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    child: Material(
+                      color: AppColors.red,
+                      borderRadius: BorderRadius.circular(13),
+                      child: InkWell(
+                        key: const ValueKey('confirm-delete-record'),
+                        onTap: () => Navigator.of(context).pop(true),
+                        borderRadius: BorderRadius.circular(13),
+                        child: SizedBox(
+                          height: 44,
+                          child: Center(
+                            child: Text(
+                              '删除',
+                              style: const TextStyle(
+                                color: AppColors.surface,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

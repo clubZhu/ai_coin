@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -57,6 +59,8 @@ class _HomePageState extends State<HomePage> {
   final _priceController = TextEditingController();
   final _amountController = TextEditingController(text: '100');
   final List<PositionRecord> _records = [];
+  final Map<String, double> _recordPrices = {};
+  final Map<String, StreamSubscription<double>> _recordPriceSubscriptions = {};
 
   StreamSubscription<double>? _livePriceSubscription;
   int _priceStreamGeneration = 0;
@@ -95,6 +99,24 @@ class _HomePageState extends State<HomePage> {
         : price * (1 - _takeProfitPercent / 100);
   }
 
+  int get _openRecordCount =>
+      _records.where((record) => record.result == PositionResult.open).length;
+
+  double? get _openUnrealizedAmount {
+    var total = 0.0;
+    var counted = 0;
+    for (final record in _records) {
+      if (record.result != PositionResult.open) continue;
+      final price = _recordPrices[record.symbol];
+      if (price == null) continue;
+      final amount = record.unrealizedAmount(price);
+      if (amount == null) continue;
+      total += amount;
+      counted++;
+    }
+    return counted == 0 ? null : total;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -105,9 +127,34 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _livePriceSubscription?.cancel();
+    for (final subscription in _recordPriceSubscriptions.values) {
+      subscription.cancel();
+    }
     _priceController.dispose();
     _amountController.dispose();
     super.dispose();
+  }
+
+  void _watchRecordPrices() {
+    final symbols = _records
+        .where((record) => record.result == PositionResult.open)
+        .map((record) => record.symbol)
+        .toSet();
+    for (final symbol in _recordPriceSubscriptions.keys.toList()) {
+      if (!symbols.contains(symbol)) {
+        _recordPriceSubscriptions.remove(symbol)!.cancel();
+        _recordPrices.remove(symbol);
+      }
+    }
+    for (final symbol in symbols) {
+      if (_recordPriceSubscriptions.containsKey(symbol)) continue;
+      _recordPriceSubscriptions[symbol] = widget.livePriceService
+          .watchPrice(symbol)
+          .listen((price) {
+            if (!mounted) return;
+            setState(() => _recordPrices[symbol] = price);
+          }, onError: (Object _) {});
+    }
   }
 
   void _fillMarketPrice() {
@@ -172,6 +219,7 @@ class _HomePageState extends State<HomePage> {
         ..clear()
         ..addAll(records);
     });
+    _watchRecordPrices();
   }
 
   Future<void> _addRecord() async {
@@ -195,6 +243,7 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     });
+    _watchRecordPrices();
     try {
       await widget.positionRepository.save(_records);
     } on Exception {
@@ -233,7 +282,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             const Expanded(
               child: Text(
-                '开仓',
+                'Add',
                 style: TextStyle(
                   color: AppColors.ink,
                   fontSize: 26,
@@ -248,7 +297,36 @@ class _HomePageState extends State<HomePage> {
               key: const ValueKey('open-records-entry'),
               onPressed: _openRecords,
               icon: const Icon(Icons.assignment_outlined, size: 16),
-              label: const Text('开仓记录'),
+              label: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('记录'),
+                  if (_openRecordCount > 0) ...[
+                    const SizedBox(width: 6),
+                    if (_openUnrealizedAmount == null)
+                      const Text(
+                        '--',
+                        style: TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      )
+                    else
+                      _RollingValue(
+                        value: _openUnrealizedAmount!,
+                        style: TextStyle(
+                          color: _openUnrealizedAmount! < 0
+                              ? AppColors.red
+                              : AppColors.teal,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          letterSpacing: -.2,
+                        ),
+                      ),
+                  ],
+                ],
+              ),
               style: TextButton.styleFrom(
                 foregroundColor: AppColors.muted,
                 backgroundColor: AppColors.surface,
@@ -324,7 +402,7 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 16),
-              const _HomeFieldLabel('开仓价格'),
+              const _HomeFieldLabel('价格'),
               const SizedBox(height: 8),
               TextField(
                 key: const ValueKey('entry-price-input'),
@@ -378,7 +456,7 @@ class _HomePageState extends State<HomePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const _HomeFieldLabel('开仓数量'),
+                        const _HomeFieldLabel('数量'),
                         const SizedBox(height: 8),
                         TextField(
                           key: const ValueKey('position-amount-input'),
@@ -478,6 +556,191 @@ class _HomePageState extends State<HomePage> {
           onTap: _addRecord,
         ),
       ],
+    );
+  }
+}
+
+class _RollingValue extends StatefulWidget {
+  const _RollingValue({required this.value, required this.style});
+
+  final double value;
+  final TextStyle style;
+
+  @override
+  State<_RollingValue> createState() => _RollingValueState();
+}
+
+class _RollingValueState extends State<_RollingValue>
+    with SingleTickerProviderStateMixin {
+  static const _decimalPlaces = [-1, -2];
+
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+  )..addListener(() => setState(() {}));
+
+  late double _from = widget.value;
+  late double _to = widget.value;
+  final Map<String, double> _glyphWidths = {};
+
+  double get _t => Curves.easeInOutCubic.transform(_controller.value);
+
+  TextStyle get _style => widget.style.copyWith(height: 1.25);
+
+  double get _lineHeight => (widget.style.fontSize ?? 12) * 1.25;
+
+  TextScaler get _textScaler => MediaQuery.textScalerOf(context);
+
+  @override
+  void didUpdateWidget(_RollingValue oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != oldWidget.value) {
+      _from = _displayedValue;
+      _to = widget.value;
+      _controller.forward(from: 0);
+    }
+  }
+
+  double get _displayedValue => lerpDouble(_from, _to, _t)!;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  double _glyphWidth(String glyph) {
+    final key = '${_textScaler.scale(10)}:$glyph';
+    return _glyphWidths.putIfAbsent(key, () {
+      final painter = TextPainter(
+        text: TextSpan(text: glyph, style: _style),
+        textDirection: TextDirection.ltr,
+        textScaler: _textScaler,
+      )..layout();
+      return painter.width;
+    });
+  }
+
+  static int _integerDigits(double value) {
+    final whole = value.abs().floor();
+    return whole <= 0 ? 1 : whole.toString().length;
+  }
+
+  static double _digitAt(double value, int place) {
+    final shifted = value.abs() * math.pow(10.0, -place);
+    return (shifted.floor() % 10).toDouble();
+  }
+
+  double _animatedDigit(int place) {
+    final fromDigit = _digitAt(_from, place);
+    final toDigit = _digitAt(_to, place);
+    if (fromDigit == toDigit) return fromDigit;
+    // Always roll upward; past 9 the strip wraps seamlessly back to 0.
+    final distance = (toDigit - fromDigit) % 10;
+    return fromDigit + distance * _t;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final height = _lineHeight;
+    final digitWidth = _glyphWidth('0');
+    final sign = _displayedValue < 0 ? '-' : '+';
+    final intDigits = math.max(_integerDigits(_from), _integerDigits(_to));
+
+    final children = <Widget>[
+      _ValueGlyph(sign, height, _glyphWidth(sign), _style),
+      _ValueGlyph(r'$', height, _glyphWidth(r'$'), _style),
+    ];
+    for (var place = intDigits - 1; place >= 0; place--) {
+      if (place > 0 && place % 3 == 2 && place != intDigits - 1) {
+        children.add(_ValueGlyph(',', height, _glyphWidth(','), _style));
+      }
+      children.add(
+        _DigitColumn(
+          position: _animatedDigit(place),
+          height: height,
+          width: digitWidth,
+          style: _style,
+        ),
+      );
+    }
+    children.add(_ValueGlyph('.', height, _glyphWidth('.'), _style));
+    for (final place in _decimalPlaces) {
+      children.add(
+        _DigitColumn(
+          position: _animatedDigit(place),
+          height: height,
+          width: digitWidth,
+          style: _style,
+        ),
+      );
+    }
+    return Row(mainAxisSize: MainAxisSize.min, children: children);
+  }
+}
+
+class _ValueGlyph extends StatelessWidget {
+  const _ValueGlyph(this.text, this.height, this.width, this.style);
+
+  final String text;
+  final double height;
+  final double width;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Center(child: Text(text, style: style)),
+    );
+  }
+}
+
+class _DigitColumn extends StatelessWidget {
+  const _DigitColumn({
+    required this.position,
+    required this.height,
+    required this.width,
+    required this.style,
+  });
+
+  final double position;
+  final double height;
+  final double width;
+  final TextStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    final base = position.floor();
+    final fraction = position - base;
+    String glyph(int value) => '${((value % 10) + 10) % 10}';
+
+    if (fraction <= 0) {
+      return _ValueGlyph(glyph(base), height, width, style);
+    }
+    return SizedBox(
+      width: width,
+      height: height,
+      child: ClipRect(
+        child: Stack(
+          clipBehavior: Clip.hardEdge,
+          children: [
+            Positioned(
+              left: 0,
+              right: 0,
+              top: -fraction * height,
+              height: height * 2,
+              child: Column(
+                children: [
+                  _ValueGlyph(glyph(base), height, width, style),
+                  _ValueGlyph(glyph(base + 1), height, width, style),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -663,7 +926,7 @@ class _DirectionSelector extends StatelessWidget {
                         ),
                         const SizedBox(width: 7),
                         Text(
-                          isLong ? '做多' : '做空',
+                          isLong ? '多' : '空',
                           style: TextStyle(
                             color: selected ? activeColor : AppColors.muted,
                             fontSize: 15,
@@ -973,7 +1236,7 @@ class _AddRecordButton extends StatelessWidget {
                   Icon(Icons.add_rounded, color: Colors.white, size: 20),
                   SizedBox(width: 7),
                   Text(
-                    '加入开仓记录',
+                    '记录',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 15,
