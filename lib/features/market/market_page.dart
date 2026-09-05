@@ -7,6 +7,7 @@ import '../../core/ui.dart';
 import '../../data/live_price_service.dart';
 import '../../data/market_repository.dart';
 import '../../domain/market_snapshot.dart';
+import '../../domain/trading_assets.dart';
 
 class MarketPage extends StatefulWidget {
   const MarketPage({
@@ -452,14 +453,15 @@ class _AssetSelector extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: selected ? AppColors.ink : Colors.transparent,
+                  color: selected ? AppColors.tealSoft : Colors.transparent,
                   borderRadius: BorderRadius.circular(13),
                 ),
                 child: Text(
                   snapshots[index].symbol,
                   style: TextStyle(
-                    color: selected ? Colors.white : AppColors.muted,
-                    fontWeight: FontWeight.w700,
+                    color: selected ? AppColors.teal : AppColors.muted,
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
                   ),
                 ),
               ),
@@ -487,11 +489,11 @@ class _AssetIcon extends StatelessWidget {
         shape: BoxShape.circle,
       ),
       child: Text(
-        symbol == 'BTC' ? '₿' : 'Ξ',
+        TradingAssets.glyph(symbol),
         style: const TextStyle(
           color: AppColors.teal,
           fontSize: 22,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w500,
         ),
       ),
     );

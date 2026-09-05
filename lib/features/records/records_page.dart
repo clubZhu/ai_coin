@@ -8,6 +8,7 @@ import '../../core/ui.dart';
 import '../../data/live_price_service.dart';
 import '../../data/position_repository.dart';
 import '../../domain/position_record.dart';
+import '../../domain/trading_assets.dart';
 
 enum _RecordFilterValue { all, open, profit, loss }
 
@@ -141,43 +142,36 @@ class _RecordsPageState extends State<RecordsPage> {
     final totalUnrealized = _loadingRecords ? null : _totalUnrealized;
     return Scaffold(
       appBar: AppBar(
+        toolbarHeight: 56,
+        titleSpacing: 0,
         leading: IconButton(
           onPressed: () => Navigator.of(context).pop(),
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 19),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
         ),
         title: const Text(
           '开仓记录',
-          style: TextStyle(fontWeight: FontWeight.w700),
+          style: TextStyle(
+            color: AppColors.ink,
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+            letterSpacing: -.3,
+          ),
         ),
       ),
       body: PageFrame(
-        padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
         children: [
-          Row(
-            children: [
-              Text(
-                _loadingRecords ? '加载中…' : '共 ${_records.length} 笔',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              if (totalUnrealized != null) ...[
-                const SizedBox(width: 10),
-                const Text('浮动', style: TextStyle(color: AppColors.muted)),
-                const SizedBox(width: 4),
-                Text(
-                  formatUsdt(totalUnrealized),
-                  style: TextStyle(
-                    color: totalUnrealized < 0 ? AppColors.red : AppColors.teal,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-              const Spacer(),
-              _RecordFilter(
-                value: _recordFilter,
-                onChanged: (value) => setState(() => _recordFilter = value),
-              ),
-            ],
+          _RecordsOverview(
+            total: _loadingRecords ? null : _records.length,
+            openCount: _records
+                .where((record) => record.result == PositionResult.open)
+                .length,
+            unrealizedAmount: totalUnrealized,
+          ),
+          const SizedBox(height: 14),
+          _RecordFilter(
+            value: _recordFilter,
+            onChanged: (value) => setState(() => _recordFilter = value),
           ),
           const SizedBox(height: 14),
           if (_loadingRecords)
@@ -222,19 +216,101 @@ class _RecordPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF0F1F4)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0A23314A),
-            blurRadius: 24,
-            offset: Offset(0, 8),
+            color: Color(0x0523314A),
+            blurRadius: 18,
+            offset: Offset(0, 4),
           ),
         ],
       ),
       child: child,
+    );
+  }
+}
+
+const _recordCaptionStyle = TextStyle(
+  color: AppColors.muted,
+  fontSize: 11,
+  height: 1.4,
+  fontWeight: FontWeight.w400,
+);
+
+class _RecordsOverview extends StatelessWidget {
+  const _RecordsOverview({
+    required this.total,
+    required this.openCount,
+    required this.unrealizedAmount,
+  });
+
+  final int? total;
+  final int openCount;
+  final double? unrealizedAmount;
+
+  @override
+  Widget build(BuildContext context) {
+    final amountColor = unrealizedAmount == null
+        ? AppColors.muted
+        : unrealizedAmount! < 0
+        ? AppColors.red
+        : AppColors.teal;
+    return _RecordPanel(
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  total == null ? '加载中…' : '共 $total 笔',
+                  style: const TextStyle(
+                    color: AppColors.ink,
+                    fontSize: 15,
+                    height: 1.3,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  total == null ? '持仓 --' : '持仓 $openCount 笔',
+                  style: _recordCaptionStyle,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            flex: 2,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                const Text('持仓浮动合计', style: _recordCaptionStyle),
+                const SizedBox(height: 4),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    unrealizedAmount == null
+                        ? '--'
+                        : formatUsdt(unrealizedAmount!),
+                    style: TextStyle(
+                      color: amountColor,
+                      fontSize: 22,
+                      height: 1.2,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -.4,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -247,52 +323,53 @@ class _RecordFilter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = switch (value) {
-      _RecordFilterValue.all => '全部',
-      _RecordFilterValue.open => '持仓',
-      _RecordFilterValue.profit => '盈利',
-      _RecordFilterValue.loss => '亏损',
-    };
-    return PopupMenuButton<_RecordFilterValue>(
+    const labels = ['全部', '持仓', '盈利', '亏损'];
+    return Container(
       key: const ValueKey('record-filter'),
-      initialValue: value,
-      onSelected: onChanged,
-      color: AppColors.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      itemBuilder: (context) => const [
-        PopupMenuItem(value: _RecordFilterValue.all, child: Text('全部')),
-        PopupMenuItem(value: _RecordFilterValue.open, child: Text('持仓')),
-        PopupMenuItem(value: _RecordFilterValue.profit, child: Text('盈利')),
-        PopupMenuItem(value: _RecordFilterValue.loss, child: Text('亏损')),
-      ],
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x0A23314A),
-              blurRadius: 18,
-              offset: Offset(0, 6),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEEF0F3),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: _RecordFilterValue.values.map((option) {
+          final selected = option == value;
+          return Expanded(
+            child: Semantics(
+              button: true,
+              selected: selected,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.surface : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => onChanged(option),
+                    borderRadius: BorderRadius.circular(10),
+                    child: SizedBox(
+                      height: 36,
+                      child: Center(
+                        child: Text(
+                          labels[option.index],
+                          style: TextStyle(
+                            color: selected ? AppColors.teal : AppColors.muted,
+                            fontSize: 12,
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(width: 7),
-            const Icon(
-              Icons.keyboard_arrow_down_rounded,
-              color: AppColors.muted,
-              size: 19,
-            ),
-          ],
-        ),
+          );
+        }).toList(),
       ),
     );
   }
@@ -307,37 +384,35 @@ class _EmptyRecords extends StatelessWidget {
   Widget build(BuildContext context) {
     return _RecordPanel(
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
+        padding: const EdgeInsets.symmetric(vertical: 24),
         child: Column(
           children: [
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                const Icon(
-                  Icons.assignment_outlined,
-                  color: Color(0xFFC8D0E2),
-                  size: 46,
-                ),
-                Positioned(
-                  left: -8,
-                  top: 2,
-                  child: Icon(
-                    Icons.add_rounded,
-                    color: AppColors.teal.withValues(alpha: .28),
-                    size: 17,
-                  ),
-                ),
-              ],
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: const Icon(
+                Icons.receipt_long_outlined,
+                color: Color(0xFFACB8C2),
+                size: 28,
+              ),
             ),
             const SizedBox(height: 12),
             Text(
               filtered ? '没有符合条件的记录' : '暂无开仓记录',
-              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
             ),
             const SizedBox(height: 7),
             Text(
-              filtered ? '切换筛选条件查看其他记录' : '回到首页添加第一笔开仓记录，开始追踪你的交易。',
-              style: Theme.of(context).textTheme.bodySmall,
+              filtered ? '试试其他筛选条件' : '在首页添加第一笔开仓记录',
+              style: _recordCaptionStyle,
               textAlign: TextAlign.center,
             ),
           ],
@@ -361,8 +436,10 @@ class _RecordCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLong = record.side == PositionSide.long;
+    final isOpen = record.result == PositionResult.open;
+    final sideColor = isLong ? AppColors.teal : AppColors.red;
     final resultColor = switch (record.result) {
-      PositionResult.open => AppColors.blue,
+      PositionResult.open => AppColors.muted,
       PositionResult.profit => AppColors.teal,
       PositionResult.loss => AppColors.red,
     };
@@ -371,8 +448,14 @@ class _RecordCard extends StatelessWidget {
       PositionResult.profit => '盈利',
       PositionResult.loss => '亏损',
     };
-    final time =
-        '${record.createdAt.hour.toString().padLeft(2, '0')}:${record.createdAt.minute.toString().padLeft(2, '0')}';
+    final amount = isOpen
+        ? (currentPrice == null ? null : record.unrealizedAmount(currentPrice!))
+        : record.realizedAmount;
+    final percent = isOpen
+        ? (currentPrice == null
+              ? null
+              : record.unrealizedPercent(currentPrice!))
+        : record.realizedPercent;
 
     return _RecordPanel(
       child: Column(
@@ -381,81 +464,118 @@ class _RecordCard extends StatelessWidget {
           Row(
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 36,
+                height: 36,
                 alignment: Alignment.center,
-                decoration: const BoxDecoration(
-                  color: AppColors.tealSoft,
-                  shape: BoxShape.circle,
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  record.symbol == 'BTC' ? '₿' : 'Ξ',
+                  TradingAssets.glyph(record.symbol),
                   style: const TextStyle(
-                    color: AppColors.teal,
+                    color: AppColors.ink,
                     fontSize: 19,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
-              const SizedBox(width: 11),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        record.symbol,
-                        style: const TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            record.symbol,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.ink,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 7),
-                      StatusPill(
-                        label: isLong ? '做多 ↑' : '做空 ↓',
-                        foreground: isLong ? AppColors.teal : AppColors.red,
-                        background: isLong
-                            ? AppColors.tealSoft
-                            : AppColors.redSoft,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '今天 $time',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 7,
+                        const SizedBox(width: 8),
+                        Text(
+                          isLong ? '做多 ↑' : '做空 ↓',
+                          style: TextStyle(
+                            color: sideColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _createdAtLabel(record.createdAt),
+                      style: _recordCaptionStyle,
+                    ),
+                  ],
                 ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                 decoration: BoxDecoration(
-                  color: resultColor.withValues(alpha: .1),
-                  borderRadius: BorderRadius.circular(100),
+                  color: resultColor.withValues(alpha: .07),
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
                   resultLabel,
                   style: TextStyle(
                     color: resultColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          Text(
-            '开仓 \$${formatPrice(record.entryPrice)}  ·  ${formatPrice(record.positionAmount)} USDT  ·  ${record.leverage}X',
-            style: Theme.of(context).textTheme.bodySmall,
+          _RecordResult(
+            label: isOpen ? '浮动盈亏' : '实际结果',
+            amount: amount,
+            percent: percent,
+            priceLabel: isOpen ? '当前价格' : '平仓价格',
+            price: isOpen ? currentPrice : record.closePrice,
           ),
           const SizedBox(height: 14),
-          const Divider(height: 1),
+          Row(
+            children: [
+              Expanded(
+                flex: 5,
+                child: _RecordMeta(
+                  label: '开仓价格',
+                  value: '\$' + formatPrice(record.entryPrice),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 5,
+                child: _RecordMeta(
+                  label: '开仓数量',
+                  value: '${formatPrice(record.positionAmount)} USDT',
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 2,
+                child: _RecordMeta(
+                  label: '杠杆',
+                  value: '${record.leverage}X',
+                  alignment: CrossAxisAlignment.end,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: 14),
+          const Divider(height: 1, thickness: .5, color: AppColors.line),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
@@ -466,7 +586,6 @@ class _RecordCard extends StatelessWidget {
                   color: AppColors.red,
                 ),
               ),
-              Container(width: 1, height: 46, color: AppColors.line),
               const SizedBox(width: 16),
               Expanded(
                 child: _RecordTarget(
@@ -478,78 +597,26 @@ class _RecordCard extends StatelessWidget {
               ),
             ],
           ),
-          if (record.result == PositionResult.open) ...[
-            const SizedBox(height: 17),
-            _UnrealizedSection(record: record, currentPrice: currentPrice),
-          ] else ...[
-            const SizedBox(height: 17),
-            Container(
-              padding: const EdgeInsets.all(13),
-              decoration: BoxDecoration(
-                color: resultColor.withValues(alpha: .08),
-                borderRadius: BorderRadius.circular(14),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              key: ValueKey('edit-record-${record.id}'),
+              onPressed: onEdit,
+              style: TextButton.styleFrom(
+                minimumSize: const Size(0, 36),
+                foregroundColor: AppColors.teal,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                textStyle: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        '实际结果',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const Spacer(),
-                      Text(
-                        formatUsdt(record.realizedAmount ?? 0),
-                        style: TextStyle(
-                          color: resultColor,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                  Row(
-                    children: [
-                      Text(
-                        '平仓价格',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      const Spacer(),
-                      if (record.closePrice != null)
-                        Text(
-                          r'$' + formatPrice(record.closePrice!),
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      const SizedBox(width: 10),
-                      Text(
-                        '${(record.realizedPercent ?? 0) > 0 ? '+' : ''}${(record.realizedPercent ?? 0).toStringAsFixed(1)}%',
-                        style: TextStyle(
-                          color: resultColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 14),
-          OutlinedButton.icon(
-            key: ValueKey('edit-record-${record.id}'),
-            onPressed: onEdit,
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(44),
-              foregroundColor: AppColors.ink,
-              side: const BorderSide(color: AppColors.line),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
-              ),
-            ),
-            icon: const Icon(Icons.edit_outlined, size: 17),
-            label: Text(
-              record.result == PositionResult.open ? '记录盈亏结果' : '编辑结果',
+              icon: const Icon(Icons.edit_outlined, size: 15),
+              label: Text(isOpen ? '记录盈亏结果' : '编辑结果'),
             ),
           ),
         ],
@@ -563,63 +630,146 @@ class _RecordCard extends StatelessWidget {
         : value.toStringAsFixed(1);
     return '$text%';
   }
+
+  static String _createdAtLabel(DateTime createdAt) {
+    final date = createdAt.toLocal();
+    final now = DateTime.now();
+    final time =
+        '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    final isToday =
+        date.year == now.year && date.month == now.month && date.day == now.day;
+    if (isToday) return '今天 $time';
+    final day =
+        '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}';
+    return date.year == now.year ? '$day $time' : '${date.year}/$day $time';
+  }
 }
 
-class _UnrealizedSection extends StatelessWidget {
-  const _UnrealizedSection({required this.record, this.currentPrice});
+class _RecordMeta extends StatelessWidget {
+  const _RecordMeta({
+    required this.label,
+    required this.value,
+    this.alignment = CrossAxisAlignment.start,
+  });
 
-  final PositionRecord record;
-  final double? currentPrice;
+  final String label;
+  final String value;
+  final CrossAxisAlignment alignment;
 
   @override
   Widget build(BuildContext context) {
-    final amount = currentPrice == null
-        ? null
-        : record.unrealizedAmount(currentPrice!);
-    final percent = currentPrice == null
-        ? null
-        : record.unrealizedPercent(currentPrice!);
-    final color = amount != null && amount < 0 ? AppColors.red : AppColors.teal;
+    return Column(
+      crossAxisAlignment: alignment,
+      children: [
+        Text(label, style: _recordCaptionStyle),
+        const SizedBox(height: 4),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: alignment == CrossAxisAlignment.end
+              ? Alignment.centerRight
+              : Alignment.centerLeft,
+          child: Text(
+            value,
+            style: const TextStyle(
+              color: AppColors.ink,
+              fontSize: 13,
+              height: 1.3,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RecordResult extends StatelessWidget {
+  const _RecordResult({
+    required this.label,
+    required this.amount,
+    required this.percent,
+    required this.priceLabel,
+    required this.price,
+  });
+
+  final String label;
+  final double? amount;
+  final double? percent;
+  final String priceLabel;
+  final double? price;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = amount == null
+        ? AppColors.muted
+        : amount! < 0
+        ? AppColors.red
+        : AppColors.teal;
     return Container(
-      padding: const EdgeInsets.all(13),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: .08),
-        borderRadius: BorderRadius.circular(14),
+        color: color.withValues(alpha: .045),
+        borderRadius: BorderRadius.circular(13),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text(label, style: _recordCaptionStyle),
+          const SizedBox(height: 5),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text('浮动盈亏', style: Theme.of(context).textTheme.bodySmall),
-              const Spacer(),
-              Text(
-                amount == null ? '--' : formatUsdt(amount),
-                style: TextStyle(
-                  color: color,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
+              Expanded(
+                flex: 3,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    amount == null ? '--' : formatUsdt(amount!),
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 22,
+                      height: 1.2,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -.4,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      percent == null
+                          ? '--'
+                          : '${percent! > 0 ? '+' : ''}${percent!.toStringAsFixed(1)}%',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 6),
           Row(
             children: [
-              Text('当前价格', style: Theme.of(context).textTheme.bodySmall),
-              const Spacer(),
-              Text(
-                currentPrice == null ? '--' : r'$' + formatPrice(currentPrice!),
-                style: const TextStyle(fontSize: 12),
-              ),
-              const SizedBox(width: 10),
-              Text(
-                percent == null
-                    ? '--'
-                    : '${percent > 0 ? '+' : ''}${percent.toStringAsFixed(1)}%',
-                style: TextStyle(
-                  color: color,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+              Text(priceLabel, style: _recordCaptionStyle),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    price == null ? '--' : '\$' + formatPrice(price!),
+                    style: _recordCaptionStyle.copyWith(color: AppColors.ink),
+                  ),
                 ),
               ),
             ],
@@ -648,20 +798,26 @@ class _RecordTarget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
+        Text(label, style: _recordCaptionStyle),
         const SizedBox(height: 3),
-        Text(
-          formatUsdt(amount),
-          style: TextStyle(
-            color: color,
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            formatUsdt(amount),
+            style: TextStyle(
+              color: color,
+              fontSize: 15,
+              height: 1.3,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
         const SizedBox(height: 2),
-        Text(
-          '\$${formatPrice(price)}',
-          style: const TextStyle(color: AppColors.muted, fontSize: 11),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text('\$${formatPrice(price)}', style: _recordCaptionStyle),
         ),
       ],
     );
@@ -679,25 +835,46 @@ class _EditRecordSheet extends StatefulWidget {
 
 class _EditRecordSheetState extends State<_EditRecordSheet> {
   late PositionResult _result;
+  late final TextEditingController _amountController;
   late final TextEditingController _percentController;
   late final TextEditingController _closePriceController;
+  double? _draftAmount;
+
+  double? get _draftPercent {
+    if (_draftAmount == null || widget.record.positionValue <= 0) return null;
+    final percent = _draftAmount! / widget.record.positionValue * 100;
+    return percent.isFinite ? percent : null;
+  }
+
+  bool get _canSave {
+    if (_result == PositionResult.open) return true;
+    if (_draftAmount == null || _draftPercent == null) return false;
+    if (_closePriceController.text.isEmpty) return true;
+    final price = _parseNumber(_closePriceController.text);
+    return price != null && price > 0;
+  }
 
   @override
   void initState() {
     super.initState();
     _result = widget.record.result;
+    _draftAmount = widget.record.realizedAmount?.abs();
+    _amountController = TextEditingController(
+      text: _draftAmount == null ? '' : _editableNumber(_draftAmount!),
+    );
     _percentController = TextEditingController(
-      text: widget.record.realizedPercent?.abs().toStringAsFixed(1) ?? '',
+      text: _draftPercent == null ? '' : _editableNumber(_draftPercent!),
     );
     _closePriceController = TextEditingController(
       text: widget.record.closePrice == null
           ? ''
-          : widget.record.closePrice!.toStringAsFixed(1),
+          : _editableNumber(widget.record.closePrice!),
     );
   }
 
   @override
   void dispose() {
+    _amountController.dispose();
     _percentController.dispose();
     _closePriceController.dispose();
     super.dispose();
@@ -706,38 +883,73 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
   void _selectResult(PositionResult result) {
     setState(() {
       _result = result;
-      if (result == PositionResult.profit && _percentController.text.isEmpty) {
-        _percentController.text = widget.record.takeProfitPercent
-            .toStringAsFixed(1);
-      } else if (result == PositionResult.loss &&
+      if (result != PositionResult.open &&
+          _amountController.text.isEmpty &&
           _percentController.text.isEmpty) {
-        _percentController.text = widget.record.stopLossPercent.toStringAsFixed(
-          1,
-        );
+        final percent = result == PositionResult.profit
+            ? widget.record.takeProfitPercent
+            : widget.record.stopLossPercent;
+        _percentController.text = _editableNumber(percent);
+        _setAmountFromPercent(_percentController.text);
       }
     });
   }
 
+  static double? _parseNumber(String text) {
+    final value = double.tryParse(text);
+    return value != null && value.isFinite && value >= 0 ? value : null;
+  }
+
+  static String _editableNumber(double value) {
+    return value.toStringAsFixed(8).replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+
+  void _onAmountChanged(String text) {
+    setState(() {
+      _draftAmount = _parseNumber(text);
+      final percent = _draftPercent;
+      _percentController.text = percent == null ? '' : _editableNumber(percent);
+    });
+  }
+
+  void _setAmountFromPercent(String text) {
+    final percent = _parseNumber(text);
+    final amount = percent == null
+        ? null
+        : widget.record.positionValue * (percent / 100);
+    _draftAmount = amount != null && amount.isFinite && amount >= 0
+        ? amount
+        : null;
+    _amountController.text = _draftAmount == null
+        ? ''
+        : _editableNumber(_draftAmount!);
+  }
+
+  void _onPercentChanged(String text) {
+    setState(() => _setAmountFromPercent(text));
+  }
+
   void _save() {
+    if (!_canSave) return;
     if (_result == PositionResult.open) {
       Navigator.of(context).pop(
         widget.record.copyWith(
           result: PositionResult.open,
           clearClosePrice: true,
           clearRealizedPercent: true,
+          clearRealizedAmount: true,
         ),
       );
       return;
     }
-    final rawPercent = double.tryParse(_percentController.text) ?? 0;
-    final signedPercent = _result == PositionResult.loss
-        ? -rawPercent.abs()
-        : rawPercent.abs();
+    final sign = _result == PositionResult.loss ? -1 : 1;
     Navigator.of(context).pop(
       widget.record.copyWith(
         result: _result,
-        realizedPercent: signedPercent,
-        closePrice: double.tryParse(_closePriceController.text),
+        realizedPercent: _draftPercent! * sign,
+        realizedAmount: _draftAmount! * sign,
+        closePrice: _parseNumber(_closePriceController.text),
+        clearClosePrice: _closePriceController.text.isEmpty,
       ),
     );
   }
@@ -746,10 +958,10 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
     return Container(
-      padding: EdgeInsets.fromLTRB(20, 12, 20, 24 + bottomInset),
+      padding: EdgeInsets.fromLTRB(20, 12, 20, 20 + bottomInset),
       decoration: const BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: SafeArea(
         top: false,
@@ -769,14 +981,37 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
                 ),
               ),
               const SizedBox(height: 18),
-              Text('编辑交易结果', style: Theme.of(context).textTheme.titleLarge),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      '编辑交易结果',
+                      style: TextStyle(
+                        color: AppColors.ink,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).pop(),
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: AppColors.muted,
+                      size: 20,
+                    ),
+                  ),
+                ],
+              ),
               const SizedBox(height: 5),
               Text(
                 '${widget.record.symbol} · ${widget.record.side == PositionSide.long ? '做多' : '做空'} · 开仓 ${formatPrice(widget.record.entryPrice)}',
-                style: Theme.of(context).textTheme.bodySmall,
+                style: _recordCaptionStyle,
               ),
               const SizedBox(height: 20),
-              const FieldLabel('当前结果'),
+              const Text('当前结果', style: _recordCaptionStyle),
               const SizedBox(height: 9),
               Row(
                 children: [
@@ -784,7 +1019,7 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
                     key: const ValueKey('result-open'),
                     label: '持仓中',
                     selected: _result == PositionResult.open,
-                    color: AppColors.blue,
+                    color: AppColors.teal,
                     onTap: () => _selectResult(PositionResult.open),
                   ),
                   const SizedBox(width: 8),
@@ -811,28 +1046,50 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
                   children: [
                     Expanded(
                       child: _SheetNumberField(
-                        fieldKey: const ValueKey('close-price-input'),
-                        label: '平仓价格',
-                        controller: _closePriceController,
-                        prefix: r'$',
+                        fieldKey: const ValueKey('result-amount-input'),
+                        label: '实际盈亏',
+                        controller: _amountController,
+                        prefix: _result == PositionResult.loss ? '− ' : '+ ',
+                        suffix: 'USDT',
+                        onChanged: _onAmountChanged,
                       ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: _SheetNumberField(
                         fieldKey: const ValueKey('result-percent-input'),
-                        label: '实际盈亏',
+                        label: '盈亏比例',
                         controller: _percentController,
                         suffix: '%',
+                        onChanged: _onPercentChanged,
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+                _SheetNumberField(
+                  fieldKey: const ValueKey('close-price-input'),
+                  label: '平仓价格（选填）',
+                  controller: _closePriceController,
+                  suffix: 'USDT',
+                  onChanged: (_) => setState(() {}),
                 ),
               ],
               const SizedBox(height: 24),
               FilledButton(
                 key: const ValueKey('save-record-result'),
-                onPressed: _save,
+                onPressed: _canSave ? _save : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.teal,
+                  minimumSize: const Size.fromHeight(48),
+                  textStyle: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                ),
                 child: const Text('保存结果'),
               ),
             ],
@@ -860,26 +1117,36 @@ class _ResultOption extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
+      child: Semantics(
+        button: true,
+        selected: selected,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 160),
           height: 44,
-          alignment: Alignment.center,
           decoration: BoxDecoration(
             color: selected
-                ? color.withValues(alpha: .11)
+                ? color.withValues(alpha: .07)
                 : AppColors.background,
             borderRadius: BorderRadius.circular(13),
             border: Border.all(
-              color: selected ? color.withValues(alpha: .35) : AppColors.line,
+              color: selected ? color.withValues(alpha: .18) : AppColors.line,
             ),
           ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? color : AppColors.muted,
-              fontWeight: FontWeight.w700,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(13),
+              child: Center(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: selected ? color : AppColors.muted,
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -895,6 +1162,7 @@ class _SheetNumberField extends StatelessWidget {
     required this.controller,
     this.prefix,
     this.suffix,
+    this.onChanged,
   });
 
   final Key fieldKey;
@@ -902,22 +1170,56 @@ class _SheetNumberField extends StatelessWidget {
   final TextEditingController controller;
   final String? prefix;
   final String? suffix;
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        FieldLabel(label),
+        Text(label, style: _recordCaptionStyle),
         const SizedBox(height: 8),
         TextField(
           key: fieldKey,
           controller: controller,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          textInputAction: TextInputAction.done,
+          onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
           inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+            TextInputFormatter.withFunction((oldValue, newValue) {
+              return RegExp(r'^\d*\.?\d*$').hasMatch(newValue.text)
+                  ? newValue
+                  : oldValue;
+            }),
           ],
-          decoration: InputDecoration(prefixText: prefix, suffixText: suffix),
+          onChanged: onChanged,
+          style: const TextStyle(
+            color: AppColors.ink,
+            fontSize: 16,
+            height: 1.25,
+            fontWeight: FontWeight.w500,
+          ),
+          decoration: InputDecoration(
+            prefixText: prefix,
+            suffixText: suffix,
+            hintText: '--',
+            isDense: true,
+            fillColor: const Color(0xFFFAFBFC),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 14,
+            ),
+            prefixStyle: _recordCaptionStyle,
+            suffixStyle: _recordCaptionStyle,
+            enabledBorder: const OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(13)),
+              borderSide: BorderSide(color: AppColors.line),
+            ),
+            focusedBorder: const OutlineInputBorder(
+              borderRadius: BorderRadius.all(Radius.circular(13)),
+              borderSide: BorderSide(color: AppColors.teal),
+            ),
+          ),
         ),
       ],
     );

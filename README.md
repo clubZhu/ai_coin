@@ -8,16 +8,16 @@ CryptoPilot 是一款面向加密货币交易者的 AI 辅助分析应用。它�
 
 这个仓库包含可运行的 Flutter V1 体验，当前覆盖：
 
-- BTC / ETH 行情快照与资产切换
+- BTC / ETH / ZEC / BNB 行情快照与资产切换
 - 首页按照开仓计算器布局展示价格、实际开仓数量、杠杆和动态止损止盈金额
-- 可本机保存并编辑盈亏结果的开仓记录
+- 可本机保存并编辑盈亏结果的开仓记录，支持输入实际 USDT 盈亏金额并同步换算比例
 - AI 多周期趋势分析
 - 关键支撑与压力地图
 - 可交互的仓位风险评分
 - 结构化 AI 问答
 - 每日交易复盘、行为模式与交易规则
 
-当前行情和交易记录由本地演示数据提供，数据访问被隔离在 `MarketRepository` 后，便于后续接入 REST、WebSocket、交易所账户与 AI 服务。
+首页价格使用币安公共 WebSocket；行情页通过币安 REST 获取快照和 K 线，并订阅实时价格。开仓记录由用户手动创建并保存在本机，不代表交易所真实下单；AI 分析等演示模块仍使用本地示例数据。
 
 ## 运行
 
@@ -28,11 +28,15 @@ flutter run
 
 ## 检查
 
+常规界面修改按用户约定，以 Android 编译通过为默认验证方式：
+
 ```bash
-flutter analyze
-flutter test
-flutter build web --release
+flutter build apk --debug
 ```
+
+## UI 规范
+
+后续界面开发必须遵循 [统一 UI 规范](docs/ui-style-guide.md)。颜色、文字层级、间距、卡片、导航、弹窗和数据状态以该文档为准；协作执行要求见 [AGENTS.md](AGENTS.md)。
 
 ## 代码结构
 

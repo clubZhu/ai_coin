@@ -56,7 +56,6 @@ class _AppShellState extends State<AppShell> {
     final snapshots = _repository.snapshots;
     final pages = [
       HomePage(
-        snapshots: snapshots,
         positionRepository: _positionRepository,
         livePriceService: _livePriceService,
       ),
@@ -103,72 +102,78 @@ class _BottomNavigation extends StatelessWidget {
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.line, width: .5)),
         boxShadow: [
           BoxShadow(
-            color: Color(0x0A23314A),
-            blurRadius: 20,
-            offset: Offset(0, -4),
+            color: Color(0x0623314A),
+            blurRadius: 16,
+            offset: Offset(0, -3),
           ),
         ],
       ),
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: 76,
-          child: Row(
-            children: List.generate(items.length, (index) {
-              final selected = index == selectedIndex;
-              final isAi = index == 2;
-              return Expanded(
-                child: Semantics(
-                  button: true,
-                  selected: selected,
-                  label: items[index].$2,
-                  child: InkWell(
-                    key: ValueKey('nav-$index'),
-                    onTap: () => onSelected(index),
-                    child: Center(
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 60,
-                        height: 58,
-                        decoration: BoxDecoration(
-                          color: isAi ? AppColors.tealSoft : Colors.transparent,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
+        child: Material(
+          color: Colors.transparent,
+          child: SizedBox(
+            height: 68,
+            child: Row(
+              children: List.generate(items.length, (index) {
+                final selected = index == selectedIndex;
+                return Expanded(
+                  child: Semantics(
+                    button: true,
+                    selected: selected,
+                    label: items[index].$2,
+                    child: InkWell(
+                      key: ValueKey('nav-$index'),
+                      onTap: () => onSelected(index),
+                      child: SizedBox.expand(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(
-                              items[index].$1,
-                              size: isAi ? 23 : 21,
-                              color: isAi
-                                  ? AppColors.teal
-                                  : selected
-                                  ? AppColors.teal
-                                  : AppColors.muted,
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 180),
+                              curve: Curves.easeOutCubic,
+                              width: 44,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? AppColors.tealSoft
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(
+                                items[index].$1,
+                                size: 21,
+                                color: selected
+                                    ? AppColors.teal
+                                    : AppColors.muted,
+                              ),
                             ),
                             const SizedBox(height: 4),
-                            Text(
-                              items[index].$2,
+                            AnimatedDefaultTextStyle(
+                              duration: const Duration(milliseconds: 180),
                               style: TextStyle(
                                 color: selected
-                                    ? AppColors.ink
+                                    ? AppColors.teal
                                     : AppColors.muted,
                                 fontSize: 11,
+                                height: 1.2,
                                 fontWeight: selected
                                     ? FontWeight.w600
                                     : FontWeight.w400,
                               ),
+                              child: Text(items[index].$2),
                             ),
                           ],
                         ),
                       ),
                     ),
                   ),
-                ),
-              );
-            }),
+                );
+              }),
+            ),
           ),
         ),
       ),

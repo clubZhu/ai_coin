@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../domain/market_snapshot.dart';
+import '../domain/trading_assets.dart';
 import 'market_repository.dart';
 
 typedef JsonFetcher = Future<Object?> Function(Uri url);
@@ -12,10 +13,8 @@ class BinanceMarketRepository implements MarketRepository {
   BinanceMarketRepository({
     JsonFetcher? fetcher,
     this.baseUrl = 'https://data-api.binance.vision',
-    this.symbols = const <String>['BTC', 'ETH'],
+    this.symbols = TradingAssets.symbols,
   }) : _fetcher = fetcher ?? _httpFetcher;
-
-  static const _names = {'BTC': 'Bitcoin', 'ETH': 'Ethereum'};
 
   static const _trendConfigs = [
     (period: '15分钟', interval: '15m', limit: 96, threshold: 0.12),
@@ -117,7 +116,7 @@ class BinanceMarketRepository implements MarketRepository {
 
     return MarketSnapshot(
       symbol: symbol,
-      name: _names[symbol] ?? symbol,
+      name: TradingAssets.names[symbol] ?? symbol,
       price: price,
       changePercent: changePercent,
       state: _state(consistency, dominant),

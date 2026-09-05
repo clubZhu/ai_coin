@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
+import '../../domain/trading_assets.dart';
 
 class RiskPage extends StatefulWidget {
   const RiskPage({super.key});
@@ -78,10 +79,12 @@ class _RiskPageState extends State<RiskPage> {
                 const _FieldLabel('交易品种'),
                 const SizedBox(height: 8),
                 _ChoiceBar(
-                  labels: const ['BTC', 'ETH'],
-                  selectedIndex: _symbol == 'BTC' ? 0 : 1,
-                  onChanged: (index) =>
-                      setState(() => _symbol = index == 0 ? 'BTC' : 'ETH'),
+                  labels: TradingAssets.symbols,
+                  selectedIndex: TradingAssets.symbols.indexOf(_symbol),
+                  onChanged: (index) => setState(() {
+                    _symbol = TradingAssets.symbols[index];
+                    _showResult = false;
+                  }),
                 ),
                 const SizedBox(height: 18),
                 const _FieldLabel('方向'),

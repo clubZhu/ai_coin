@@ -7,7 +7,7 @@ import '../../core/app_theme.dart';
 import '../../core/ui.dart';
 import '../../data/live_price_service.dart';
 import '../../data/position_repository.dart';
-import '../../domain/market_snapshot.dart';
+import '../../domain/trading_assets.dart';
 import '../../domain/position_record.dart';
 import '../records/records_page.dart';
 
@@ -40,12 +40,12 @@ class _ThousandsSeparatorInputFormatter extends TextInputFormatter {
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
-    required this.snapshots,
+    this.symbols = TradingAssets.symbols,
     required this.positionRepository,
     required this.livePriceService,
   });
 
-  final List<MarketSnapshot> snapshots;
+  final List<String> symbols;
   final PositionRepository positionRepository;
   final LivePriceService livePriceService;
 
@@ -65,15 +65,11 @@ class _HomePageState extends State<HomePage> {
   double _stopLossPercent = 2;
   double _takeProfitPercent = 10;
   int _leverage = 5;
-  bool _loadingRecords = true;
   bool _hasLivePrice = false;
   bool _followMarketPrice = true;
   double? _livePrice;
 
-  int get _openCount =>
-      _records.where((record) => record.result == PositionResult.open).length;
-
-  MarketSnapshot get _snapshot => widget.snapshots[_selectedAsset];
+  String get _symbol => widget.symbols[_selectedAsset];
   double? get _entryPrice =>
       double.tryParse(_priceController.text.replaceAll(',', '').trim());
   double? get _amount =>
@@ -146,7 +142,7 @@ class _HomePageState extends State<HomePage> {
     final generation = ++_priceStreamGeneration;
     _livePriceSubscription?.cancel();
     _livePriceSubscription = widget.livePriceService
-        .watchPrice(_snapshot.symbol)
+        .watchPrice(_symbol)
         .listen(
           (price) {
             if (!mounted || generation != _priceStreamGeneration) return;
@@ -175,7 +171,6 @@ class _HomePageState extends State<HomePage> {
       _records
         ..clear()
         ..addAll(records);
-      _loadingRecords = false;
     });
   }
 
@@ -189,7 +184,7 @@ class _HomePageState extends State<HomePage> {
         0,
         PositionRecord(
           id: DateTime.now().microsecondsSinceEpoch.toString(),
-          symbol: _snapshot.symbol,
+          symbol: _symbol,
           side: _side,
           entryPrice: price,
           stopLossPercent: _stopLossPercent,
@@ -212,7 +207,7 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('${_snapshot.symbol} 开仓计划已加入记录')));
+    ).showSnackBar(SnackBar(content: Text('$_symbol 开仓计划已加入记录')));
   }
 
   Future<void> _openRecords() async {
@@ -231,72 +226,50 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return PageFrame(
-      padding: const EdgeInsets.fromLTRB(22, 16, 22, 100),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
       children: [
         Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    '开仓',
-                    style: TextStyle(
-                      color: AppColors.ink,
-                      fontSize: 30,
-                      height: 1.1,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -.8,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '先算风险，再进场',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
+            const Expanded(
+              child: Text(
+                '开仓',
+                style: TextStyle(
+                  color: AppColors.ink,
+                  fontSize: 26,
+                  height: 1.2,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.5,
+                ),
               ),
             ),
             const SizedBox(width: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.tealSoft,
-                borderRadius: BorderRadius.circular(100),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.calculate_outlined,
-                    color: AppColors.teal,
-                    size: 15,
-                  ),
-                  SizedBox(width: 6),
-                  Text(
-                    '仓位计算器',
-                    style: TextStyle(
-                      color: AppColors.teal,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
+            TextButton.icon(
+              key: const ValueKey('open-records-entry'),
+              onPressed: _openRecords,
+              icon: const Icon(Icons.assignment_outlined, size: 16),
+              label: const Text('开仓记录'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.muted,
+                backgroundColor: AppColors.surface,
+                minimumSize: const Size(0, 40),
+                padding: const EdgeInsets.symmetric(horizontal: 13),
+                textStyle: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+                side: const BorderSide(color: AppColors.line),
+                shape: const StadiumBorder(),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 18),
         _HomePanel(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _DirectionSelector(
-                side: _side,
-                onChanged: (side) => setState(() => _side = side),
-              ),
-            ],
+          padding: const EdgeInsets.all(10),
+          child: _DirectionSelector(
+            side: _side,
+            onChanged: (side) => setState(() => _side = side),
           ),
         ),
         const SizedBox(height: 12),
@@ -307,39 +280,52 @@ class _HomePageState extends State<HomePage> {
               Row(
                 children: [
                   _CoinSelector(
-                    snapshots: widget.snapshots,
+                    symbols: widget.symbols,
                     selectedIndex: _selectedAsset,
                     onSelected: _selectAsset,
                   ),
-                  const Spacer(),
-                  TextButton.icon(
-                    key: const ValueKey('use-market-price'),
-                    onPressed: () => setState(_fillMarketPrice),
-                    icon: Icon(
-                      Icons.bolt_rounded,
-                      size: 17,
-                      color: _hasLivePrice ? AppColors.teal : AppColors.muted,
-                    ),
-                    label: Text(
-                      _livePrice == null
-                          ? '市价 --'
-                          : '${_hasLivePrice ? '实时' : '市价'} ${formatPrice(_livePrice!)}',
-                    ),
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.teal,
-                      padding: EdgeInsets.zero,
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      visualDensity: VisualDensity.compact,
-                      textStyle: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        key: const ValueKey('use-market-price'),
+                        onPressed: () => setState(_fillMarketPrice),
+                        icon: Icon(
+                          Icons.bolt_rounded,
+                          size: 15,
+                          color: _hasLivePrice
+                              ? AppColors.teal
+                              : AppColors.muted,
+                        ),
+                        label: Text(
+                          _livePrice == null
+                              ? '市价 --'
+                              : '${_hasLivePrice ? '实时' : '市价'} ${formatPrice(_livePrice!)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        style: TextButton.styleFrom(
+                          foregroundColor: _hasLivePrice
+                              ? AppColors.teal
+                              : AppColors.muted,
+                          padding: EdgeInsets.zero,
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                          textStyle: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
+              const _HomeFieldLabel('开仓价格'),
+              const SizedBox(height: 8),
               TextField(
                 key: const ValueKey('entry-price-input'),
                 controller: _priceController,
@@ -347,17 +333,21 @@ class _HomePageState extends State<HomePage> {
                   decimal: true,
                 ),
                 inputFormatters: const [_ThousandsSeparatorInputFormatter()],
+                textInputAction: TextInputAction.next,
+                onTapOutside: (_) =>
+                    FocusManager.instance.primaryFocus?.unfocus(),
                 style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -.6,
+                  fontSize: 22,
+                  height: 1.2,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: -.3,
                 ),
-                decoration: InputDecoration(
+                decoration: _homeInputDecoration.copyWith(
                   prefixText: r'$ ',
                   hintText: '--',
                   hintStyle: const TextStyle(
                     color: AppColors.muted,
-                    fontSize: 18,
+                    fontSize: 22,
                     fontWeight: FontWeight.w400,
                   ),
                   prefixStyle: const TextStyle(
@@ -373,10 +363,9 @@ class _HomePageState extends State<HomePage> {
                       fontWeight: FontWeight.w500,
                     ),
                   ),
-                  fillColor: Color(0xFFFAFBFC),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 12,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 14,
                   ),
                 ),
                 onChanged: (_) => setState(() => _followMarketPrice = false),
@@ -389,7 +378,7 @@ class _HomePageState extends State<HomePage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const FieldLabel('开仓数量'),
+                        const _HomeFieldLabel('开仓数量'),
                         const SizedBox(height: 8),
                         TextField(
                           key: const ValueKey('position-amount-input'),
@@ -400,21 +389,20 @@ class _HomePageState extends State<HomePage> {
                           inputFormatters: const [
                             _ThousandsSeparatorInputFormatter(),
                           ],
+                          textInputAction: TextInputAction.done,
+                          onTapOutside: (_) =>
+                              FocusManager.instance.primaryFocus?.unfocus(),
                           style: const TextStyle(
                             fontSize: 16,
+                            height: 1.25,
                             fontWeight: FontWeight.w500,
                           ),
-                          decoration: const InputDecoration(
+                          decoration: _homeInputDecoration.copyWith(
                             suffixText: 'USDT',
-                            suffixStyle: TextStyle(
+                            suffixStyle: const TextStyle(
                               color: AppColors.muted,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                            ),
-                            fillColor: Color(0xFFFAFBFC),
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 15,
-                              vertical: 13,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w400,
                             ),
                           ),
                           onChanged: (_) => setState(() {}),
@@ -431,7 +419,6 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
-              
             ],
           ),
         ),
@@ -490,34 +477,33 @@ class _HomePageState extends State<HomePage> {
           enabled: _canSubmit,
           onTap: _addRecord,
         ),
-        const SizedBox(height: 14),
-        _RecordsEntry(
-          total: _loadingRecords ? null : _records.length,
-          openCount: _openCount,
-          onTap: _openRecords,
-        ),
       ],
     );
   }
 }
 
 class _HomePanel extends StatelessWidget {
-  const _HomePanel({required this.child});
+  const _HomePanel({
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+  });
 
   final Widget child;
+  final EdgeInsets padding;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: padding,
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF0F1F4)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0A23314A),
-            blurRadius: 24,
-            offset: Offset(0, 8),
+            color: Color(0x0523314A),
+            blurRadius: 18,
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -526,14 +512,48 @@ class _HomePanel extends StatelessWidget {
   }
 }
 
+const _homeInputDecoration = InputDecoration(
+  filled: true,
+  isDense: true,
+  fillColor: Color(0xFFFAFBFC),
+  contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+  enabledBorder: OutlineInputBorder(
+    borderRadius: BorderRadius.all(Radius.circular(13)),
+    borderSide: BorderSide(color: AppColors.line),
+  ),
+  focusedBorder: OutlineInputBorder(
+    borderRadius: BorderRadius.all(Radius.circular(13)),
+    borderSide: BorderSide(color: AppColors.teal),
+  ),
+);
+
+class _HomeFieldLabel extends StatelessWidget {
+  const _HomeFieldLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        color: AppColors.muted,
+        fontSize: 12,
+        height: 1.3,
+        fontWeight: FontWeight.w500,
+      ),
+    );
+  }
+}
+
 class _CoinSelector extends StatelessWidget {
   const _CoinSelector({
-    required this.snapshots,
+    required this.symbols,
     required this.selectedIndex,
     required this.onSelected,
   });
 
-  final List<MarketSnapshot> snapshots;
+  final List<String> symbols;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
 
@@ -547,32 +567,39 @@ class _CoinSelector extends StatelessWidget {
       position: PopupMenuPosition.under,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       itemBuilder: (context) => List.generate(
-        snapshots.length,
+        symbols.length,
         (index) => PopupMenuItem<int>(
           value: index,
-          child: Text('${snapshots[index].symbol}/USDT'),
+          child: Text('${symbols[index]}/USDT'),
         ),
       ),
       child: Container(
-        height: 30,
-        padding: const EdgeInsets.only(left: 9, right: 5),
+        height: 36,
+        padding: const EdgeInsets.only(left: 10, right: 6),
         decoration: BoxDecoration(
           color: AppColors.background,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: AppColors.line),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              snapshots[selectedIndex].symbol,
+              symbols[selectedIndex],
               style: const TextStyle(
                 color: AppColors.ink,
-                fontSize: 11,
+                fontSize: 14,
                 fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(width: 1),
+            const Text(
+              ' / USDT',
+              style: TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+            const SizedBox(width: 4),
             const Icon(
               Icons.keyboard_arrow_down_rounded,
               color: AppColors.muted,
@@ -603,54 +630,51 @@ class _DirectionSelector extends StatelessWidget {
             padding: EdgeInsets.only(
               right: value == PositionSide.long ? 10 : 0,
             ),
-            child: GestureDetector(
-              key: ValueKey('direction-${value.name}'),
-              onTap: () => onChanged(value),
+            child: Semantics(
+              button: true,
+              selected: selected,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 160),
-                height: 50,
-                alignment: Alignment.center,
+                height: 46,
                 decoration: BoxDecoration(
                   color: selected
-                      ? activeColor.withValues(alpha: .08)
+                      ? activeColor.withValues(alpha: .07)
                       : const Color(0xFFF8F9FB),
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(13),
                   border: Border.all(
                     color: selected
-                        ? activeColor.withValues(alpha: .28)
+                        ? activeColor.withValues(alpha: .18)
                         : Colors.transparent,
                   ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      isLong ? Icons.north_rounded : Icons.south_rounded,
-                      size: 19,
-                      color: selected ? activeColor : AppColors.muted,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    key: ValueKey('direction-${value.name}'),
+                    onTap: () => onChanged(value),
+                    borderRadius: BorderRadius.circular(13),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          isLong ? Icons.north_rounded : Icons.south_rounded,
+                          size: 18,
+                          color: selected ? activeColor : AppColors.muted,
+                        ),
+                        const SizedBox(width: 7),
+                        Text(
+                          isLong ? '做多' : '做空',
+                          style: TextStyle(
+                            color: selected ? activeColor : AppColors.muted,
+                            fontSize: 15,
+                            fontWeight: selected
+                                ? FontWeight.w600
+                                : FontWeight.w500,
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 7),
-                    Text(
-                      isLong ? '做多' : '做空',
-                      style: TextStyle(
-                        color: selected ? activeColor : AppColors.muted,
-                        fontSize: 15,
-                        fontWeight: selected
-                            ? FontWeight.w700
-                            : FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    AnimatedOpacity(
-                      duration: const Duration(milliseconds: 160),
-                      opacity: selected ? 1 : 0,
-                      child: Icon(
-                        Icons.check_circle_rounded,
-                        size: 16,
-                        color: activeColor,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -673,14 +697,14 @@ class _LeverageSelector extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const FieldLabel('杠杆'),
+        const _HomeFieldLabel('杠杆'),
         const SizedBox(height: 8),
         Container(
-          height: 52,
+          height: 48,
           padding: const EdgeInsets.symmetric(horizontal: 13),
           decoration: BoxDecoration(
             color: const Color(0xFFFAFBFC),
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(13),
             border: Border.all(color: AppColors.line),
           ),
           child: DropdownButtonHideUnderline(
@@ -688,8 +712,13 @@ class _LeverageSelector extends StatelessWidget {
               key: const ValueKey('leverage-selector'),
               value: value,
               isExpanded: true,
-              borderRadius: BorderRadius.circular(16),
-              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+              dropdownColor: AppColors.surface,
+              borderRadius: BorderRadius.circular(13),
+              icon: const Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: AppColors.muted,
+                size: 18,
+              ),
               style: const TextStyle(
                 color: AppColors.ink,
                 fontSize: 16,
@@ -743,17 +772,17 @@ class _TargetCard extends StatelessWidget {
     final percentText = percent % 1 == 0
         ? percent.toStringAsFixed(0)
         : percent.toStringAsFixed(1);
-    final icon = title == '止损' ? Icons.shield_outlined : Icons.flag_outlined;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF0F1F4)),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x0A23314A),
-            blurRadius: 24,
-            offset: Offset(0, 8),
+            color: Color(0x0523314A),
+            blurRadius: 18,
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -762,13 +791,12 @@ class _TargetCard extends StatelessWidget {
         children: [
           Row(
             children: [
-
-              const SizedBox(width: 6),
               Text(
                 title,
                 style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+                  color: AppColors.ink,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
               const Spacer(),
@@ -778,16 +806,19 @@ class _TargetCard extends StatelessWidget {
                 onTap: onDecrease,
               ),
               const SizedBox(width: 2),
-              SizedBox(
-                width: 30,
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(
-                    '$percentText%',
-                    style: TextStyle(
-                      color: color,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
+              Flexible(
+                flex: 3,
+                child: SizedBox(
+                  width: 30,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      '$percentText%',
+                      style: TextStyle(
+                        color: color,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
@@ -800,25 +831,36 @@ class _TargetCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Text(
-            formatUsdt(amount),
-            key: ValueKey('$title-amount'),
-            style: TextStyle(
-              color: color,
-              fontSize: 19,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -.3,
+          const SizedBox(height: 12),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              formatUsdt(amount),
+              key: ValueKey('$title-amount'),
+              style: TextStyle(
+                color: color,
+                fontSize: 22,
+                height: 1.25,
+                fontWeight: FontWeight.w500,
+                letterSpacing: -.4,
+              ),
             ),
           ),
           const SizedBox(height: 4),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
             child: Text(
               price == null ? '价格 --' : '价格 ${formatPrice(price!)} USDT',
               key: ValueKey(price),
               maxLines: 1,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                height: 1.4,
+                fontWeight: FontWeight.w400,
+              ),
             ),
           ),
           const SizedBox(height: 10),
@@ -831,18 +873,16 @@ class _TargetCard extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.gps_fixed_rounded, color: color, size: 13),
-                const SizedBox(width: 5),
                 Flexible(
                   child: Text(
-                    '距离当前 ${distancePercent > 0 ? '+' : ''}${distancePercent.toStringAsFixed(2)}%',
+                    '开仓价 ${distancePercent > 0 ? '+' : ''}${distancePercent.toStringAsFixed(2)}%',
                     maxLines: 1,
                     overflow: TextOverflow.fade,
                     softWrap: false,
                     style: TextStyle(
                       color: color,
                       fontSize: 10,
-                      fontWeight: FontWeight.w500,
+                      fontWeight: FontWeight.w400,
                     ),
                   ),
                 ),
@@ -864,15 +904,26 @@ class _StepButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: AppColors.background,
-      shape: const CircleBorder(),
+      color: Colors.transparent,
       child: InkWell(
-        customBorder: const CircleBorder(),
+        borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: SizedBox(
-          width: 22,
-          height: 22,
-          child: Icon(icon, size: 13, color: AppColors.ink),
+          width: 26,
+          height: 32,
+          child: Center(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(7),
+              ),
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: Icon(icon, size: 15, color: AppColors.ink),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -897,110 +948,41 @@ class _AddRecordButton extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [Color(0xFF0B8F80), Color(0xFF0A8277)],
+            colors: [Color(0xFF11897D), Color(0xFF147D73)],
           ),
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(15),
           boxShadow: const [
             BoxShadow(
-              color: Color(0x33147D73),
-              blurRadius: 18,
-              offset: Offset(0, 8),
+              color: Color(0x1A147D73),
+              blurRadius: 12,
+              offset: Offset(0, 5),
             ),
           ],
         ),
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(15),
           child: InkWell(
             onTap: enabled ? onTap : null,
-            borderRadius: BorderRadius.circular(20),
+            borderRadius: BorderRadius.circular(15),
             child: const SizedBox(
               height: 48,
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.add_circle_outline_rounded, color: Colors.white),
-                  SizedBox(width: 9),
+                  Icon(Icons.add_rounded, color: Colors.white, size: 20),
+                  SizedBox(width: 7),
                   Text(
-                    '记录',
+                    '加入开仓记录',
                     style: TextStyle(
                       color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ],
               ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _RecordsEntry extends StatelessWidget {
-  const _RecordsEntry({
-    required this.total,
-    required this.openCount,
-    required this.onTap,
-  });
-
-  final int? total;
-  final int openCount;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return _HomePanel(
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          key: const ValueKey('open-records-entry'),
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(14),
-          child: Row(
-            children: [
-              Container(
-                width: 42,
-                height: 42,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: AppColors.tealSoft,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Icon(
-                  Icons.assignment_outlined,
-                  color: AppColors.teal,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      '开仓记录',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      total == null ? '加载中…' : '共 $total 笔 · 持仓中 $openCount 笔',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(
-                Icons.keyboard_arrow_right_rounded,
-                color: AppColors.muted,
-                size: 22,
-              ),
-            ],
           ),
         ),
       ),

@@ -15,8 +15,9 @@ class PositionRecord {
     this.leverage = 5,
     this.result = PositionResult.open,
     this.realizedPercent,
+    double? realizedAmount,
     this.closePrice,
-  });
+  }) : _realizedAmount = realizedAmount;
 
   factory PositionRecord.fromJson(Map<String, dynamic> json) {
     return PositionRecord(
@@ -40,6 +41,7 @@ class PositionRecord {
         orElse: () => PositionResult.open,
       ),
       realizedPercent: (json['realizedPercent'] as num?)?.toDouble(),
+      realizedAmount: (json['realizedAmount'] as num?)?.toDouble(),
       closePrice: (json['closePrice'] as num?)?.toDouble(),
     );
   }
@@ -55,6 +57,7 @@ class PositionRecord {
   final int leverage;
   final PositionResult result;
   final double? realizedPercent;
+  final double? _realizedAmount;
   final double? closePrice;
 
   double get stopLossPrice => side == PositionSide.long
@@ -84,7 +87,8 @@ class PositionRecord {
   }
 
   double? get realizedAmount =>
-      realizedPercent == null ? null : positionValue * realizedPercent! / 100;
+      _realizedAmount ??
+      (realizedPercent == null ? null : positionValue * realizedPercent! / 100);
 
   Map<String, dynamic> toJson() {
     return {
@@ -99,6 +103,7 @@ class PositionRecord {
       'leverage': leverage,
       'result': result.name,
       'realizedPercent': realizedPercent,
+      'realizedAmount': realizedAmount,
       'closePrice': closePrice,
     };
   }
@@ -106,9 +111,11 @@ class PositionRecord {
   PositionRecord copyWith({
     PositionResult? result,
     double? realizedPercent,
+    double? realizedAmount,
     double? closePrice,
     bool clearClosePrice = false,
     bool clearRealizedPercent = false,
+    bool clearRealizedAmount = false,
   }) {
     return PositionRecord(
       id: id,
@@ -124,6 +131,10 @@ class PositionRecord {
       realizedPercent: clearRealizedPercent
           ? null
           : realizedPercent ?? this.realizedPercent,
+      realizedAmount: clearRealizedPercent || clearRealizedAmount
+          ? null
+          : realizedAmount ??
+                (realizedPercent != null ? null : _realizedAmount),
       closePrice: clearClosePrice ? null : closePrice ?? this.closePrice,
     );
   }
