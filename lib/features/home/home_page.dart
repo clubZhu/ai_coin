@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' show lerpDouble;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
@@ -282,7 +283,7 @@ class _HomePageState extends State<HomePage> {
           children: [
             const Expanded(
               child: Text(
-                'Add',
+                'Save',
                 style: TextStyle(
                   color: AppColors.ink,
                   fontSize: 26,
@@ -555,6 +556,11 @@ class _HomePageState extends State<HomePage> {
           enabled: _canSubmit,
           onTap: _addRecord,
         ),
+        const SizedBox(height: 12),
+        _ProfitJarCard(
+          amount: _openUnrealizedAmount,
+          openCount: _openRecordCount,
+        ),
       ],
     );
   }
@@ -743,6 +749,589 @@ class _DigitColumn extends StatelessWidget {
       ),
     );
   }
+}
+
+const _kJarRippleDuration = Duration(milliseconds: 460);
+
+const _jarCaptionStyle = TextStyle(
+  color: AppColors.muted,
+  fontSize: 11,
+  height: 1.4,
+  fontWeight: FontWeight.w400,
+);
+
+class _ProfitJarCard extends StatefulWidget {
+  const _ProfitJarCard({required this.amount, required this.openCount});
+
+  final double? amount;
+  final int openCount;
+
+  @override
+  State<_ProfitJarCard> createState() => _ProfitJarCardState();
+}
+
+class _ProfitJarCardState extends State<_ProfitJarCard>
+    with SingleTickerProviderStateMixin {
+  static const _maxCoins = 50;
+
+  late final Ticker _ticker;
+
+  Duration _elapsed = Duration.zero;
+  int _placed = 0; // coins fully stacked in the jar
+  int _fromCoins = 0;
+  int _targetCoins = 0;
+  int _lastPlaced = 0;
+  Duration _countStart = Duration.zero;
+  Duration _countDuration = const Duration(milliseconds: 600);
+  bool _countAnimating = false;
+  int _flightIndex = -1; // coin currently entering or leaving the stack
+  double _flightT = 0;
+  bool _flightIn = true;
+  final List<_JarRipple> _ripples = [];
+  final List<_JarFlowCoin> _flows = [];
+  math.Random? _random;
+
+  double _nextSeed() => (_random ??= math.Random()).nextDouble();
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker(_onTick);
+    final initial = _countFor(widget.amount);
+    _placed = _fromCoins = _targetCoins = _lastPlaced = initial;
+  }
+
+  @override
+  void didUpdateWidget(_ProfitJarCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final amount = widget.amount;
+    final count = _countFor(amount);
+    var active = false;
+    if (count != _countFor(oldWidget.amount)) {
+      // Whole-dollar change: coins join or leave the stack one by one.
+      _fromCoins = _placed;
+      _targetCoins = count;
+      _countDuration = Duration(
+        milliseconds: (420 + 52 * (count - _placed).abs()).clamp(420, 1600),
+      );
+      _countStart = _elapsed;
+      _countAnimating = true;
+      _flightIn = count >= _placed;
+      _lastPlaced = _placed;
+      active = true;
+    } else {
+      // Sub-dollar change: a single coin still flies in or out.
+      final delta = (amount ?? 0) - (oldWidget.amount ?? 0);
+      final inward = delta > 0;
+      if (delta.abs() >= 0.005 &&
+          _flows.length < 4 &&
+          (inward || _placed > 0)) {
+        _flows.add(
+          _JarFlowCoin(start: _elapsed, inward: inward, seed: _nextSeed()),
+        );
+        active = true;
+      }
+    }
+    if (active && !_ticker.isActive) _ticker.start();
+  }
+
+  @override
+  void dispose() {
+    _ticker.stop();
+    super.dispose();
+  }
+
+  static int _countFor(double? amount) {
+    if (amount == null || amount <= 0) return 0;
+    return amount.floor().clamp(0, _maxCoins);
+  }
+
+  void _onTick(Duration elapsed) {
+    _elapsed = elapsed;
+    if (_countAnimating) {
+      final t =
+          ((elapsed - _countStart).inMicroseconds /
+                  _countDuration.inMicroseconds)
+              .clamp(0.0, 1.0);
+      final v = lerpDouble(
+        _fromCoins.toDouble(),
+        _targetCoins.toDouble(),
+        Curves.easeInOutCubic.transform(t),
+      )!;
+      _placed = v.floor();
+      _flightIndex = _placed;
+      _flightT = v - _placed;
+      if (_flightT <= 0.001 || _flightIndex >= _targetCoins) {
+        _flightIndex = -1;
+      }
+      if (v > _lastPlaced && _ripples.length < 3) {
+        _ripples.add(_JarRipple(start: elapsed, index: _lastPlaced));
+      }
+      _lastPlaced = _placed;
+      if (t >= 1) {
+        _countAnimating = false;
+        _placed = _targetCoins;
+        _flightIndex = -1;
+      }
+    }
+    for (final flow in _flows) {
+      if (!flow.landed && flow.inward && flow.progress(elapsed) >= .92) {
+        flow.landed = true;
+        if (_ripples.length < 3) {
+          _ripples.add(_JarRipple(start: elapsed, seedX: flow.seed));
+        }
+      }
+    }
+    _flows.removeWhere((flow) => flow.isFinished(elapsed));
+    _ripples.removeWhere((ripple) => ripple.isFinished(elapsed));
+    if (!_countAnimating && _ripples.isEmpty && _flows.isEmpty) {
+      _ticker.stop();
+      _elapsed = Duration.zero;
+      _countStart = Duration.zero;
+    }
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final amount = widget.amount;
+    return _HomePanel(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 92,
+            height: 124,
+            child: CustomPaint(
+              painter: _JarPainter(
+                placed: _placed,
+                flightIndex: _flightIndex,
+                flightT: _flightT,
+                flightIn: _flightIn,
+                ripples: _ripples,
+                flows: _flows,
+                elapsed: _elapsed,
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('开仓中浮动盈亏', style: _jarCaptionStyle),
+                const SizedBox(height: 5),
+                if (amount == null)
+                  const Text(
+                    '--',
+                    style: TextStyle(
+                      color: AppColors.muted,
+                      fontSize: 22,
+                      height: 1.25,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -.4,
+                    ),
+                  )
+                else
+                  _RollingValue(
+                    value: amount,
+                    style: TextStyle(
+                      color: amount < 0 ? AppColors.red : AppColors.teal,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: -.4,
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                Text(
+                  widget.openCount > 0
+                      ? '持仓 ${widget.openCount} 笔 · 金币随盈亏增减'
+                      : '暂无持仓记录',
+                  style: _jarCaptionStyle,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _JarRipple {
+  _JarRipple({required this.start, this.index, this.seedX});
+
+  final Duration start;
+  final int? index;
+  final double? seedX;
+
+  bool isFinished(Duration elapsed) => elapsed >= start + _kJarRippleDuration;
+
+  double progress(Duration elapsed) =>
+      ((elapsed - start).inMicroseconds / _kJarRippleDuration.inMicroseconds)
+          .clamp(0.0, 1.0);
+}
+
+class _JarFlowCoin {
+  _JarFlowCoin({required this.start, required this.inward, required this.seed});
+
+  final Duration start;
+  final bool inward;
+  final double seed;
+  bool landed = false;
+
+  Duration get lifetime => Duration(milliseconds: inward ? 640 : 780);
+
+  bool isFinished(Duration elapsed) => elapsed >= start + lifetime;
+
+  double progress(Duration elapsed) =>
+      ((elapsed - start).inMicroseconds / lifetime.inMicroseconds).clamp(
+        0.0,
+        1.0,
+      );
+}
+
+class _JarPainter extends CustomPainter {
+  _JarPainter({
+    required this.placed,
+    required this.flightIndex,
+    required this.flightT,
+    required this.flightIn,
+    required this.ripples,
+    required this.flows,
+    required this.elapsed,
+  });
+
+  static const _perRow = 4;
+
+  final int placed;
+  final int flightIndex;
+  final double flightT;
+  final bool flightIn;
+  final List<_JarRipple> ripples;
+  final List<_JarFlowCoin> flows;
+  final Duration elapsed;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final lidWidth = size.width * .56;
+    final lidHeight = size.height * .115;
+    final lidRect = Rect.fromLTWH(
+      (size.width - lidWidth) / 2,
+      0,
+      lidWidth,
+      lidHeight,
+    );
+    final lid = RRect.fromRectAndRadius(lidRect, const Radius.circular(6));
+    final bodyTop = lidHeight + size.height * .035;
+    final bodyInset = size.width * .09;
+    final body = RRect.fromRectAndCorners(
+      Rect.fromLTRB(bodyInset, bodyTop, size.width - bodyInset, size.height),
+      topLeft: const Radius.circular(10),
+      topRight: const Radius.circular(10),
+      bottomLeft: const Radius.circular(20),
+      bottomRight: const Radius.circular(20),
+    );
+    final inner = body.deflate(3.5);
+    final centerX = size.width / 2;
+    final coinWidth = inner.width / (_perRow + .55);
+    final coinHeight = coinWidth * .36;
+    final coinRadius = coinWidth * .43;
+
+    // Interior: the coin stack, ripples and the entering coin are clipped so a
+    // coin only appears once it is inside the jar.
+    canvas.save();
+    canvas.clipRRect(inner);
+    for (var index = 0; index < placed; index++) {
+      _drawCoin(
+        canvas,
+        _coinSlot(inner, coinWidth, coinHeight, index),
+        coinRadius,
+        flatten: coinHeight * .5,
+        opacity: .96,
+      );
+    }
+    for (final ripple in ripples) {
+      final p = Curves.easeOutCubic.transform(ripple.progress(elapsed));
+      final Offset center;
+      if (ripple.index != null) {
+        final slot = _coinSlot(inner, coinWidth, coinHeight, ripple.index!);
+        center = Offset(slot.dx, slot.dy - coinHeight * .5);
+      } else {
+        center = _pileTop(inner, coinWidth, coinHeight, ripple.seedX ?? .5);
+      }
+      final width = coinWidth * .8 + 16 * p;
+      canvas.drawOval(
+        Rect.fromCenter(center: center, width: width, height: width * .26),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = AppColors.amber.withValues(alpha: .38 * (1 - p)),
+      );
+    }
+    if (flightIndex >= 0 && flightIn && flightT > 0) {
+      final easeFall = Curves.easeInQuad.transform(flightT);
+      final easeDrift = Curves.easeOutCubic.transform(flightT);
+      final target = _coinSlot(inner, coinWidth, coinHeight, flightIndex);
+      final startX =
+          centerX + (flightIndex % 2 == 0 ? -1.0 : 1.0) * lidWidth * .08;
+      final x = lerpDouble(startX, target.dx, easeDrift)!;
+      final y = lerpDouble(bodyTop + 2, target.dy - 1, easeFall)!;
+      _drawCoin(
+        canvas,
+        Offset(x, y),
+        coinRadius,
+        flatten: lerpDouble(coinRadius, coinHeight * .5, easeFall),
+        spin: (1 - easeFall) * (flightIndex * 1.7 + flightT * math.pi * 2),
+        opacity: flightT < .12 ? flightT / .12 : 1,
+      );
+    }
+    for (final flow in flows) {
+      if (!flow.inward || flow.progress(elapsed) <= 0) continue;
+      final p = flow.progress(elapsed);
+      final easeFall = Curves.easeInQuad.transform(p);
+      final easeDrift = Curves.easeOutCubic.transform(p);
+      final from = Offset(
+        inner.left + inner.width / 2 + (flow.seed - .5) * lidWidth * .2,
+        bodyTop + 2,
+      );
+      final to = _pileTop(inner, coinWidth, coinHeight, flow.seed);
+      final x = lerpDouble(from.dx, to.dx, easeDrift)!;
+      final y = lerpDouble(from.dy, to.dy, easeFall)!;
+      _drawCoin(
+        canvas,
+        Offset(x, y),
+        coinRadius,
+        flatten: lerpDouble(coinRadius, coinHeight * .5, easeFall),
+        spin: (1 - easeFall) * (flow.seed * 6 + p * math.pi * 2),
+        opacity: p < .12 ? p / .12 : 1,
+      );
+    }
+    if (flightIndex >= 0 && !flightIn) {
+      _drawExit(
+        canvas: canvas,
+        t: flightT,
+        clippedPhase: true,
+        from: _coinSlot(inner, coinWidth, coinHeight, flightIndex),
+        centerX: centerX,
+        bodyTop: bodyTop,
+        coinRadius: coinRadius,
+        coinHeight: coinHeight,
+        side: flightIndex % 2 == 0 ? -1.0 : 1.0,
+        drift: 10 + (flightIndex % 3) * 5,
+      );
+    }
+    for (final flow in flows) {
+      if (flow.inward) continue;
+      _drawExit(
+        canvas: canvas,
+        t: flow.progress(elapsed),
+        clippedPhase: true,
+        from: _pileTop(inner, coinWidth, coinHeight, flow.seed),
+        centerX: centerX,
+        bodyTop: bodyTop,
+        coinRadius: coinRadius,
+        coinHeight: coinHeight,
+        side: flow.seed < .5 ? -1.0 : 1.0,
+        drift: 10 + flow.seed * 14,
+      );
+    }
+    canvas.restore();
+
+    // Glass body.
+    canvas.drawRRect(
+      body,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = AppColors.muted.withValues(alpha: .38),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndCorners(
+        Rect.fromLTWH(inner.left + 5, bodyTop + 9, 5, inner.height * .42),
+        topLeft: const Radius.circular(2.5),
+        topRight: const Radius.circular(2.5),
+        bottomLeft: const Radius.circular(2.5),
+        bottomRight: const Radius.circular(2.5),
+      ),
+      Paint()..color = Colors.white.withValues(alpha: .6),
+    );
+
+    // Lid and coin slot.
+    canvas.drawRRect(lid, Paint()..color = AppColors.background);
+    canvas.drawRRect(
+      lid,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = AppColors.muted.withValues(alpha: .38),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(centerX, lidRect.center.dy),
+          width: lidWidth * .34,
+          height: 3.5,
+        ),
+        const Radius.circular(2),
+      ),
+      Paint()..color = AppColors.ink.withValues(alpha: .32),
+    );
+
+    // Above the glass: coins that slipped out of the slot drift away and fade.
+    if (flightIndex >= 0 && !flightIn) {
+      _drawExit(
+        canvas: canvas,
+        t: flightT,
+        clippedPhase: false,
+        from: _coinSlot(inner, coinWidth, coinHeight, flightIndex),
+        centerX: centerX,
+        bodyTop: bodyTop,
+        coinRadius: coinRadius,
+        coinHeight: coinHeight,
+        side: flightIndex % 2 == 0 ? -1.0 : 1.0,
+        drift: 10 + (flightIndex % 3) * 5,
+      );
+    }
+    for (final flow in flows) {
+      if (flow.inward) continue;
+      _drawExit(
+        canvas: canvas,
+        t: flow.progress(elapsed),
+        clippedPhase: false,
+        from: _pileTop(inner, coinWidth, coinHeight, flow.seed),
+        centerX: centerX,
+        bodyTop: bodyTop,
+        coinRadius: coinRadius,
+        coinHeight: coinHeight,
+        side: flow.seed < .5 ? -1.0 : 1.0,
+        drift: 10 + flow.seed * 14,
+      );
+    }
+  }
+
+  Offset _pileTop(
+    RRect inner,
+    double coinWidth,
+    double coinHeight,
+    double seed,
+  ) {
+    if (placed <= 0) {
+      return Offset(
+        inner.left + inner.width * (.35 + .3 * seed),
+        inner.bottom - coinHeight * .55,
+      );
+    }
+    final top = _coinSlot(inner, coinWidth, coinHeight, placed - 1);
+    return Offset(top.dx, top.dy - coinHeight * .55);
+  }
+
+  /// A leaving coin travels in two phases: first it slides across the pile to
+  /// the jar's centre line and rises (drawn inside the interior clip), then it
+  /// slips out of the slot on the lid, drifts aside and fades (drawn above the
+  /// glass). It never falls back into the jar.
+  void _drawExit({
+    required Canvas canvas,
+    required double t,
+    required bool clippedPhase,
+    required Offset from,
+    required double centerX,
+    required double bodyTop,
+    required double coinRadius,
+    required double coinHeight,
+    required double side,
+    required double drift,
+  }) {
+    if (t <= 0 || t >= 1) return;
+    if (clippedPhase && t >= .5) return;
+    if (!clippedPhase && t < .5) return;
+    if (t < .5) {
+      final u = t / .5;
+      final x = lerpDouble(from.dx, centerX, Curves.easeOutCubic.transform(u))!;
+      final y = lerpDouble(
+        from.dy,
+        bodyTop + 1,
+        Curves.easeInQuad.transform(u),
+      )!;
+      _drawCoin(
+        canvas,
+        Offset(x, y),
+        coinRadius,
+        flatten: lerpDouble(coinHeight * .5, coinRadius, u),
+        spin: (1 - u) * side * 1.2,
+        opacity: 1,
+      );
+    } else {
+      final u = (t - .5) / .5;
+      final ease = Curves.easeOutCubic.transform(u);
+      final x = centerX + side * drift * ease;
+      final y = lerpDouble(bodyTop, -8, ease)!;
+      _drawCoin(
+        canvas,
+        Offset(x, y),
+        coinRadius,
+        spin: side * ease * math.pi * .8,
+        opacity: u < .45 ? 1 : 1 - (u - .45) / .55,
+      );
+    }
+  }
+
+  Offset _coinSlot(
+    RRect inner,
+    double coinWidth,
+    double coinHeight,
+    int index,
+  ) {
+    final row = index ~/ _perRow;
+    final col = index % _perRow;
+    final jitter = ((index * 37) % 5 - 2) * .5;
+    return Offset(
+      inner.left + coinWidth * .55 + col * coinWidth * 1.02 + jitter,
+      inner.bottom - coinHeight * .55 - row * coinHeight * .88,
+    );
+  }
+
+  void _drawCoin(
+    Canvas canvas,
+    Offset center,
+    double radius, {
+    double spin = 0,
+    double opacity = 1,
+    double? flatten,
+  }) {
+    final ry = (flatten ?? radius).clamp(0.5, radius);
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    if (spin != 0) canvas.rotate(spin);
+    final rect = Rect.fromCenter(
+      center: Offset.zero,
+      width: radius * 2,
+      height: ry * 2,
+    );
+    canvas.drawOval(
+      rect,
+      Paint()..color = AppColors.amberSoft.withValues(alpha: opacity),
+    );
+    canvas.drawOval(
+      rect,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.1
+        ..color = AppColors.amber.withValues(alpha: .75 * opacity),
+    );
+    if (ry > radius * .6) {
+      canvas.drawCircle(
+        Offset(-radius * .32, -ry * .32),
+        radius * .3,
+        Paint()..color = Colors.white.withValues(alpha: .8 * opacity),
+      );
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _JarPainter oldDelegate) => true;
 }
 
 class _HomePanel extends StatelessWidget {
