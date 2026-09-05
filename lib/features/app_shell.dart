@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
+import '../data/binance_market_repository.dart';
 import '../data/live_price_service.dart';
+import '../data/market_repository.dart';
 import '../data/mock_market_repository.dart';
 import '../data/position_repository.dart';
 import 'ai/ai_page.dart';
@@ -12,10 +14,16 @@ import 'profile/profile_page.dart';
 import 'risk/risk_page.dart';
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key, this.positionRepository, this.livePriceService});
+  const AppShell({
+    super.key,
+    this.positionRepository,
+    this.livePriceService,
+    this.marketRepository,
+  });
 
   final PositionRepository? positionRepository;
   final LivePriceService? livePriceService;
+  final MarketRepository? marketRepository;
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -23,6 +31,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   final _repository = const MockMarketRepository();
+  late final MarketRepository _marketRepository =
+      widget.marketRepository ?? BinanceMarketRepository();
   late final PositionRepository _positionRepository =
       widget.positionRepository ?? LocalPositionRepository();
   late final LivePriceService _livePriceService =
@@ -50,7 +60,10 @@ class _AppShellState extends State<AppShell> {
         positionRepository: _positionRepository,
         livePriceService: _livePriceService,
       ),
-      MarketPage(snapshots: snapshots),
+      MarketPage(
+        repository: _marketRepository,
+        livePriceService: _livePriceService,
+      ),
       AiPage(
         snapshots: snapshots,
         onOpenRisk: _openRisk,

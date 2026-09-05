@@ -19,6 +19,35 @@ String formatPrice(double value) {
   return buffer.toString();
 }
 
+String formatUsdt(double value) {
+  final parts = value.abs().toStringAsFixed(2).split('.');
+  final whole = formatPrice(double.parse(parts.first));
+  final sign = value > 0
+      ? '+'
+      : value < 0
+      ? '-'
+      : '';
+  return '$sign\$$whole.${parts.last}';
+}
+
+class FieldLabel extends StatelessWidget {
+  const FieldLabel(this.text, {super.key});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 14,
+        height: 1.3,
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+}
+
 class PageFrame extends StatelessWidget {
   const PageFrame({
     super.key,

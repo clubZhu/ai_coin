@@ -71,6 +71,18 @@ class PositionRecord {
 
   double get estimatedProfit => positionValue * takeProfitPercent / 100;
 
+  double? unrealizedPercent(double currentPrice) {
+    if (entryPrice <= 0) return null;
+    final change = (currentPrice - entryPrice) / entryPrice * 100;
+    return side == PositionSide.long ? change : -change;
+  }
+
+  double? unrealizedAmount(double currentPrice) {
+    final percent = unrealizedPercent(currentPrice);
+    if (percent == null) return null;
+    return positionValue * percent / 100;
+  }
+
   double? get realizedAmount =>
       realizedPercent == null ? null : positionValue * realizedPercent! / 100;
 

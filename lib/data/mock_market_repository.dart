@@ -1,13 +1,25 @@
 import '../domain/market_snapshot.dart';
-
-abstract interface class MarketRepository {
-  List<MarketSnapshot> get snapshots;
-}
+import 'market_repository.dart';
 
 class MockMarketRepository implements MarketRepository {
   const MockMarketRepository();
 
   @override
+  Future<List<MarketSnapshot>> fetchSnapshots() async => snapshots;
+
+  @override
+  Future<List<double>> fetchChartPoints({
+    required String symbol,
+    required MarketRange range,
+  }) async {
+    return snapshots
+        .firstWhere(
+          (snapshot) => snapshot.symbol == symbol,
+          orElse: () => snapshots.first,
+        )
+        .chartPoints;
+  }
+
   List<MarketSnapshot> get snapshots => const [
     MarketSnapshot(
       symbol: 'BTC',

@@ -1,25 +1,216 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
+import '../../data/live_price_service.dart';
+import '../../data/market_repository.dart';
 import '../../domain/market_snapshot.dart';
 
 class MarketPage extends StatefulWidget {
-  const MarketPage({super.key, required this.snapshots});
+  const MarketPage({
+    super.key,
+    required this.repository,
+    this.livePriceService,
+  });
 
-  final List<MarketSnapshot> snapshots;
+  final MarketRepository repository;
+  final LivePriceService? livePriceService;
 
   @override
   State<MarketPage> createState() => _MarketPageState();
 }
 
 class _MarketPageState extends State<MarketPage> {
+  final List<MarketSnapshot> _snapshots = [];
+
+  StreamSubscription<double>? _priceSubscription;
+  int _priceStreamGeneration = 0;
+
+  MarketRange _selectedRange = MarketRange.day;
   int _selectedAsset = 0;
-  int _selectedRange = 2;
+  bool _loadingChart = false;
+  bool _hasLivePrice = false;
+  List<double> _chartPoints = const [];
+  double? _livePrice;
+  Object? _error;
+
+  bool get _hasData => _snapshots.isNotEmpty;
+  MarketSnapshot get _snapshot => _snapshots[_selectedAsset];
+  double get _displayPrice => _livePrice ?? _snapshot.price;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSnapshots();
+  }
+
+  @override
+  void dispose() {
+    _priceSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadSnapshots() async {
+    setState(() => _error = null);
+    try {
+      final snapshots = await widget.repository.fetchSnapshots();
+      if (!mounted) return;
+      setState(() {
+        _snapshots
+          ..clear()
+          ..addAll(snapshots);
+        if (_selectedAsset >= _snapshots.length) _selectedAsset = 0;
+        _chartPoints = _snapshot.chartPoints;
+      });
+      _watchSelectedPrice();
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error);
+      if (_hasData) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('行情刷新失败，请稍后重试')));
+      }
+    }
+  }
+
+  Future<void> _loadChart() async {
+    if (!_hasData) return;
+    final symbol = _snapshot.symbol;
+    final range = _selectedRange;
+    setState(() => _loadingChart = true);
+    try {
+      final points = await widget.repository.fetchChartPoints(
+        symbol: symbol,
+        range: range,
+      );
+      if (!mounted || symbol != _snapshot.symbol || range != _selectedRange) {
+        return;
+      }
+      setState(() {
+        _chartPoints = points;
+        _loadingChart = false;
+      });
+    } on Object {
+      if (!mounted || symbol != _snapshot.symbol || range != _selectedRange) {
+        return;
+      }
+      setState(() {
+        _chartPoints = _snapshot.chartPoints;
+        _loadingChart = false;
+      });
+    }
+  }
+
+  void _selectAsset(int index) {
+    if (index == _selectedAsset) return;
+    setState(() {
+      _selectedAsset = index;
+      _livePrice = null;
+      _hasLivePrice = false;
+    });
+    _watchSelectedPrice();
+    _loadChart();
+  }
+
+  void _selectRange(MarketRange range) {
+    if (range == _selectedRange) return;
+    setState(() => _selectedRange = range);
+    _loadChart();
+  }
+
+  void _watchSelectedPrice() {
+    final service = widget.livePriceService;
+    if (service == null || !_hasData) return;
+    final generation = ++_priceStreamGeneration;
+    _priceSubscription?.cancel();
+    _priceSubscription = service
+        .watchPrice(_snapshot.symbol)
+        .listen(
+          (price) {
+            if (!mounted || generation != _priceStreamGeneration) return;
+            setState(() {
+              _livePrice = price;
+              _hasLivePrice = true;
+            });
+          },
+          onError: (Object _) {
+            if (!mounted || generation != _priceStreamGeneration) return;
+            setState(() => _hasLivePrice = false);
+          },
+        );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final snapshot = widget.snapshots[_selectedAsset];
+    return RefreshIndicator(
+      onRefresh: _loadSnapshots,
+      child: _hasData ? _buildContent(context) : _buildPlaceholder(context),
+    );
+  }
+
+  Widget _buildPlaceholder(BuildContext context) {
+    if (_error != null) {
+      return PageFrame(
+        children: [
+          SizedBox(
+            height: 460,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.cloud_off_rounded,
+                  size: 42,
+                  color: AppColors.muted,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '行情加载失败',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '$_error',
+                  style: Theme.of(context).textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  key: const ValueKey('retry-market'),
+                  onPressed: _loadSnapshots,
+                  icon: const Icon(Icons.refresh_rounded, size: 18),
+                  label: const Text('重新加载'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    return PageFrame(
+      children: [
+        Text('行情', style: Theme.of(context).textTheme.headlineMedium),
+        const SizedBox(height: 22),
+        const AppCard(
+          child: SizedBox(
+            height: 300,
+            child: Center(
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
+    final snapshot = _snapshot;
     final positive = snapshot.changePercent >= 0;
 
     return PageFrame(
@@ -40,12 +231,15 @@ class _MarketPageState extends State<MarketPage> {
           ],
         ),
         const SizedBox(height: 5),
-        Text('BTC / ETH 市场快照', style: Theme.of(context).textTheme.bodySmall),
+        Text(
+          '${_snapshots.map((snapshot) => snapshot.symbol).join(' / ')} 市场快照',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
         const SizedBox(height: 22),
         _AssetSelector(
-          snapshots: widget.snapshots,
+          snapshots: _snapshots,
           selectedIndex: _selectedAsset,
-          onSelected: (value) => setState(() => _selectedAsset = value),
+          onSelected: _selectAsset,
         ),
         const SizedBox(height: 16),
         AppCard(
@@ -75,53 +269,74 @@ class _MarketPageState extends State<MarketPage> {
               ),
               const SizedBox(height: 25),
               Text(
-                r'$' + formatPrice(snapshot.price),
+                r'$' + formatPrice(_displayPrice),
+                key: ValueKey('market-price-${snapshot.symbol}'),
                 style: Theme.of(context).textTheme.displaySmall,
               ),
               const SizedBox(height: 7),
-              Text(
-                '${positive ? '+' : ''}${snapshot.changePercent.toStringAsFixed(2)}%  24h',
-                style: TextStyle(
-                  color: positive ? AppColors.teal : AppColors.red,
-                  fontWeight: FontWeight.w700,
-                ),
+              Row(
+                children: [
+                  Text(
+                    '${positive ? '+' : ''}${snapshot.changePercent.toStringAsFixed(2)}%  24h',
+                    style: TextStyle(
+                      color: positive ? AppColors.teal : AppColors.red,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  if (_hasLivePrice) ...[
+                    const SizedBox(width: 8),
+                    const StatusPill(label: '实时', icon: Icons.bolt_rounded),
+                  ],
+                ],
               ),
               const SizedBox(height: 24),
               SizedBox(
                 height: 170,
-                child: MarketLineChart(
-                  points: snapshot.chartPoints,
-                  color: positive ? AppColors.teal : AppColors.red,
-                ),
+                child: _loadingChart
+                    ? const Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    : MarketLineChart(
+                        points: _chartPoints,
+                        color: positive ? AppColors.teal : AppColors.red,
+                      ),
               ),
               const SizedBox(height: 12),
               Row(
-                children: List.generate(5, (index) {
-                  const ranges = ['1H', '4H', '1D', '1W', '1M'];
-                  final selected = index == _selectedRange;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => setState(() => _selectedRange = index),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        height: 34,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: selected ? AppColors.ink : Colors.transparent,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          ranges[index],
-                          style: TextStyle(
-                            color: selected ? Colors.white : AppColors.muted,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
+                children: [
+                  for (final range in MarketRange.values)
+                    Expanded(
+                      child: GestureDetector(
+                        key: ValueKey('range-${range.label}'),
+                        onTap: () => _selectRange(range),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 160),
+                          height: 34,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: range == _selectedRange
+                                ? AppColors.ink
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            range.label,
+                            style: TextStyle(
+                              color: range == _selectedRange
+                                  ? Colors.white
+                                  : AppColors.muted,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  );
-                }),
+                ],
               ),
             ],
           ),
