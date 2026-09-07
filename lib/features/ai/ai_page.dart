@@ -2,17 +2,20 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
+import '../../data/market_repository.dart';
 import '../../domain/market_snapshot.dart';
 
 class AiPage extends StatefulWidget {
   const AiPage({
     super.key,
-    required this.snapshots,
+    required this.repository,
+    required this.active,
     required this.onOpenRisk,
     required this.onOpenReview,
   });
 
-  final List<MarketSnapshot> snapshots;
+  final MarketRepository repository;
+  final bool active;
   final VoidCallback onOpenRisk;
   final VoidCallback onOpenReview;
 
@@ -24,12 +27,57 @@ class _AiPageState extends State<AiPage> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   final List<String> _questions = [];
+  List<MarketSnapshot>? _snapshots;
+  Object? _error;
+  bool _loading = false;
+
+  MarketSnapshot? get _snapshot {
+    final snapshots = _snapshots;
+    if (snapshots == null || snapshots.isEmpty) return null;
+    return snapshots.first;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // 页面在 IndexedStack 中常驻，首次切到该页时才拉取行情，避免启动双份请求。
+    if (widget.active) _load();
+  }
+
+  @override
+  void didUpdateWidget(AiPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) _load();
+  }
 
   @override
   void dispose() {
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final snapshots = await widget.repository.fetchSnapshots();
+      if (!mounted) return;
+      setState(() {
+        _snapshots = snapshots.isEmpty ? null : snapshots;
+        _error = snapshots.isEmpty ? const FormatException('行情数据为空') : null;
+        _loading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error;
+        _loading = false;
+      });
+    }
   }
 
   void _ask(String question) {
@@ -52,7 +100,7 @@ class _AiPageState extends State<AiPage> {
 
   @override
   Widget build(BuildContext context) {
-    final snapshot = widget.snapshots.first;
+    final snapshot = _snapshot;
     return PageFrame(
       controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -96,9 +144,14 @@ class _AiPageState extends State<AiPage> {
           ],
         ),
         const SizedBox(height: 24),
-        const _AssistantIntro(),
+        _AssistantIntro(snapshot: snapshot),
         const SizedBox(height: 14),
-        _AnalysisCard(snapshot: snapshot),
+        _SnapshotSection(
+          snapshot: snapshot,
+          loading: _loading,
+          error: _error,
+          onRetry: _load,
+        ),
         const SizedBox(height: 18),
         Text('你可以继续问', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 10),
@@ -157,11 +210,45 @@ class _AiPageState extends State<AiPage> {
   }
 }
 
+/// 距当前价最近的下方/上方价位，作为关键支撑与压力。
+PriceLevel? _nearestLevel(MarketSnapshot snapshot, {required bool below}) {
+  final candidates =
+      snapshot.levels
+          .where(
+            (level) =>
+                !level.isCurrent &&
+                (below
+                    ? level.price < snapshot.price
+                    : level.price > snapshot.price),
+          )
+          .toList()
+        ..sort(
+          (a, b) => below ? b.price.compareTo(a.price) : a.price.compareTo(b.price),
+        );
+  return candidates.isEmpty ? null : candidates.first;
+}
+
+TimeframeTrend _trendFor(MarketSnapshot snapshot, String period) {
+  for (final trend in snapshot.trends) {
+    if (trend.period == period) return trend;
+  }
+  return snapshot.trends.isNotEmpty
+      ? snapshot.trends.last
+      : TimeframeTrend(
+          period: period,
+          label: '震荡',
+          direction: TrendDirection.flat,
+        );
+}
+
 class _AssistantIntro extends StatelessWidget {
-  const _AssistantIntro();
+  const _AssistantIntro({this.snapshot});
+
+  final MarketSnapshot? snapshot;
 
   @override
   Widget build(BuildContext context) {
+    final symbol = snapshot?.symbol;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -191,12 +278,82 @@ class _AssistantIntro extends StatelessWidget {
               ),
             ),
             child: Text(
-              '早上好。我已整理最新的 BTC 市场快照。先看结构，再决定是否需要承担风险。',
+              '早上好。${symbol == null ? '我正在整理最新的市场快照' : '我已整理最新的 $symbol 市场快照'}。'
+              '先看结构，再决定是否需要承担风险。',
               style: Theme.of(context).textTheme.bodyMedium,
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _SnapshotSection extends StatelessWidget {
+  const _SnapshotSection({
+    required this.snapshot,
+    required this.loading,
+    required this.error,
+    required this.onRetry,
+  });
+
+  final MarketSnapshot? snapshot;
+  final bool loading;
+  final Object? error;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (snapshot != null) return _AnalysisCard(snapshot: snapshot!);
+    final failed = !loading && error != null;
+    return AppCard(
+      border: const Border(left: BorderSide(color: AppColors.teal, width: 3)),
+      child: failed
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '行情加载失败',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '$error',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.muted, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    key: const ValueKey('retry-ai'),
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('重试'),
+                  ),
+                ),
+              ],
+            )
+          : loading
+          ? const Row(
+              children: [
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2.2),
+                ),
+                SizedBox(width: 12),
+                Text('正在获取币安实时行情…'),
+              ],
+            )
+          : const Row(
+              children: [
+                Icon(Icons.satellite_alt_outlined, size: 18, color: AppColors.muted),
+                SizedBox(width: 12),
+                Text('进入本页后将自动加载最新行情'),
+              ],
+            ),
     );
   }
 }
@@ -208,6 +365,14 @@ class _AnalysisCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final support = _nearestLevel(snapshot, below: true);
+    final resistance = _nearestLevel(snapshot, below: false);
+    final stateParts = snapshot.state.split('·');
+    final stateWord = stateParts.length > 1
+        ? stateParts.last.trim()
+        : snapshot.state;
+    final diverged = snapshot.consistency < 75;
+
     return AppCard(
       border: const Border(left: BorderSide(color: AppColors.teal, width: 3)),
       child: Column(
@@ -232,17 +397,13 @@ class _AnalysisCard extends StatelessWidget {
                   value: r'$' + formatPrice(snapshot.price),
                 ),
               ),
-              Expanded(
-                child: Metric(label: '市场状态', value: '震荡偏弱'),
-              ),
+              Expanded(child: Metric(label: '市场状态', value: stateWord)),
             ],
           ),
           const SizedBox(height: 18),
           const Divider(height: 1),
           const SizedBox(height: 8),
-          ...snapshot.trends
-              .skip(1)
-              .map((trend) => TrendLine(trend: trend, compact: true)),
+          ...snapshot.trends.map((trend) => TrendLine(trend: trend, compact: true)),
           const SizedBox(height: 8),
           const Divider(height: 1),
           const SizedBox(height: 15),
@@ -251,14 +412,18 @@ class _AnalysisCard extends StatelessWidget {
               Expanded(
                 child: Metric(
                   label: '关键支撑',
-                  value: r'$76,200',
+                  value: support == null
+                      ? '--'
+                      : r'$' + formatPrice(support.price),
                   valueColor: AppColors.teal,
                 ),
               ),
               Expanded(
                 child: Metric(
                   label: '关键压力',
-                  value: r'$78,400',
+                  value: resistance == null
+                      ? '--'
+                      : r'$' + formatPrice(resistance.price),
                   valueColor: AppColors.amber,
                 ),
               ),
@@ -271,19 +436,21 @@ class _AnalysisCard extends StatelessWidget {
               color: AppColors.amberSoft,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: const Row(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
+                const Icon(
                   Icons.warning_amber_rounded,
                   color: AppColors.amber,
                   size: 19,
                 ),
-                SizedBox(width: 9),
+                const SizedBox(width: 9),
                 Expanded(
                   child: Text(
-                    '风险：15M 与 4H 方向分歧，短线反弹不等于回调已经结束。',
-                    style: TextStyle(fontSize: 12, height: 1.45),
+                    '风险：${diverged ? '多周期方向存在分歧，' : ''}'
+                    '24h 波动属${snapshot.riskLabel}水平，多周期一致度 ${snapshot.consistency}%，'
+                    '先控制仓位再参与。',
+                    style: const TextStyle(fontSize: 12, height: 1.45),
                   ),
                 ),
               ],
@@ -329,30 +496,54 @@ class _FollowUpAnswer extends StatelessWidget {
   const _FollowUpAnswer({required this.question, required this.snapshot});
 
   final String question;
-  final MarketSnapshot snapshot;
+  final MarketSnapshot? snapshot;
 
   @override
   Widget build(BuildContext context) {
-    final lower = question.toLowerCase();
+    final current = snapshot;
     late final String title;
     late final String answer;
     late final String tag;
-    if (lower.contains('支撑')) {
-      title = '关键支撑判断';
-      answer = '第一观察位是 76,200–76,600。若 4H 收盘有效跌破，下一观察位在 75,300；触及支撑不代表必须做多。';
-      tag = r'$76,200';
-    } else if (lower.contains('4小时') || lower.contains('4h')) {
-      title = '4H 结构';
-      answer = '4H 仍处于从前高回落后的调整段，价格尚未重新站稳 78,400，因此当前更适合定义为回调中的震荡。';
-      tag = '回调 ↓';
-    } else if (lower.contains('波动') || lower.contains('为什么')) {
-      title = '波动来源';
-      answer = '短周期成交量放大，同时多周期方向分歧。临近关键支撑时，多空换手会放大盘中波动。';
-      tag = 'ATR 偏高';
+    if (current == null) {
+      title = '快照加载中';
+      answer = '最新行情还没拿到，等市场快照加载完成后再问一次吧。';
+      tag = '等待数据';
     } else {
-      title = '回调 vs. 反转';
-      answer = '目前更接近 4H 回调，而不是日线反转。只有关键支撑失守、日线结构转弱后，反转风险才会明显上升。';
-      tag = snapshot.state;
+      final lower = question.toLowerCase();
+      final support = _nearestLevel(current, below: true);
+      if (lower.contains('支撑')) {
+        title = '关键支撑判断';
+        final supportPrice = support?.price ?? current.low24h;
+        answer =
+            '第一观察位在 ${formatPrice(supportPrice)} 附近'
+            '${support == null ? '' : '（${support.label}）'}。'
+            '若有效跌破，需要重新评估多头结构；触及支撑不代表必须做多。';
+        tag = r'$' + formatPrice(supportPrice);
+      } else if (lower.contains('4小时') || lower.contains('4h')) {
+        title = '4H 结构';
+        final trend = _trendFor(current, '4小时');
+        answer =
+            '4H 目前属于${trend.label}结构。${current.state}，'
+            '多周期一致度 ${current.consistency}%。';
+        tag = '${trend.label} ${trend.direction.arrow}';
+      } else if (lower.contains('波动') || lower.contains('为什么')) {
+        title = '波动来源';
+        final rangePercent = current.price > 0
+            ? (current.high24h - current.low24h) / current.price * 100
+            : 0.0;
+        answer =
+            '24h 价格在 ${formatPrice(current.low24h)} – '
+            '${formatPrice(current.high24h)} 之间，振幅约 '
+            '${rangePercent.toStringAsFixed(1)}%，波动属${current.riskLabel}水平。'
+            '关键位附近多空换手会放大盘中波动。';
+        tag = '振幅 ${rangePercent.toStringAsFixed(1)}%';
+      } else {
+        title = '回调 vs. 反转';
+        answer =
+            '当前市场状态是「${current.state}」，多周期一致度 '
+            '${current.consistency}%。方向不明确时先控制仓位，等结构明朗再加大参与。';
+        tag = current.state;
+      }
     }
 
     return Row(

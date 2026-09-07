@@ -36,16 +36,17 @@ class _TestLivePriceService implements LivePriceService {
 }
 
 class _TestMarketRepository implements MarketRepository {
-  _TestMarketRepository({this.failFirst = false});
+  _TestMarketRepository({this.failCalls = 0});
 
-  final bool failFirst;
+  /// 前 [failCalls] 次 fetchSnapshots 抛错，用于验证加载失败与重试。
+  final int failCalls;
   int calls = 0;
   final List<MarketRange> chartRanges = [];
 
   @override
   Future<List<MarketSnapshot>> fetchSnapshots() async {
     calls++;
-    if (failFirst && calls == 1) {
+    if (calls <= failCalls) {
       throw const FormatException('网络请求失败');
     }
     return [
@@ -351,6 +352,23 @@ void main() {
     expect(find.text(r'$76,200'), findsWidgets);
   });
 
+  testWidgets('AI 页加载失败时可以重试', (tester) async {
+    // 行情页启动时消耗第 1 次失败，AI 页首次加载消耗第 2 次。
+    final repository = _TestMarketRepository(failCalls: 2);
+    await launchApp(tester, marketRepository: repository);
+
+    await tester.tap(find.byKey(const ValueKey('nav-2')));
+    await tester.pumpAndSettle();
+    expect(find.text('行情加载失败'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('retry-ai')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('BTC 市场分析'), findsOneWidget);
+    // 测试快照 BTC 价格 80,000，关键支撑取最近下方价位 80,000 × 0.95。
+    expect(find.text(r'$76,000'), findsOneWidget);
+  });
+
   test('Binance 行情接口会解析行情并推导多周期趋势', () async {
     Future<Object?> fetcher(Uri url) async {
       if (url.path.contains('ticker/24hr')) {
@@ -431,7 +449,7 @@ void main() {
   });
 
   testWidgets('行情页加载失败时可以重试', (tester) async {
-    final repository = _TestMarketRepository(failFirst: true);
+    final repository = _TestMarketRepository(failCalls: 1);
     await launchApp(tester, marketRepository: repository);
 
     await tester.tap(find.byKey(const ValueKey('nav-1')));

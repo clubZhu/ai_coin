@@ -4,7 +4,6 @@ import '../core/app_theme.dart';
 import '../data/binance_market_repository.dart';
 import '../data/live_price_service.dart';
 import '../data/market_repository.dart';
-import '../data/mock_market_repository.dart';
 import '../data/position_repository.dart';
 import 'ai/ai_page.dart';
 import 'home/home_page.dart';
@@ -30,7 +29,6 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  final _repository = const MockMarketRepository();
   late final MarketRepository _marketRepository =
       widget.marketRepository ?? BinanceMarketRepository();
   late final PositionRepository _positionRepository =
@@ -53,7 +51,6 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    final snapshots = _repository.snapshots;
     final pages = [
       HomePage(
         positionRepository: _positionRepository,
@@ -64,7 +61,8 @@ class _AppShellState extends State<AppShell> {
         livePriceService: _livePriceService,
       ),
       AiPage(
-        snapshots: snapshots,
+        repository: _marketRepository,
+        active: _index == 2,
         onOpenRisk: _openRisk,
         onOpenReview: _openReview,
       ),

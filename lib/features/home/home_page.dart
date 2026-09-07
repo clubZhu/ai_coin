@@ -772,8 +772,6 @@ class _ProfitJarCard extends StatefulWidget {
 
 class _ProfitJarCardState extends State<_ProfitJarCard>
     with SingleTickerProviderStateMixin {
-  static const _maxCoins = 50;
-
   late final Ticker _ticker;
 
   Duration _elapsed = Duration.zero;
@@ -843,7 +841,7 @@ class _ProfitJarCardState extends State<_ProfitJarCard>
 
   static int _countFor(double? amount) {
     if (amount == null || amount <= 0) return 0;
-    return amount.floor().clamp(0, _maxCoins);
+    return amount.floor();
   }
 
   void _onTick(Duration elapsed) {
@@ -992,6 +990,25 @@ class _JarFlowCoin {
       );
 }
 
+/// One coin in the jar: a 1, 10 or 100 coin with its laid-out geometry.
+class _JarCoinSlot {
+  const _JarCoinSlot(this.denom, this.center, this.radius, this.height);
+
+  final int denom;
+  final Offset center;
+  final double radius;
+  final double height;
+}
+
+/// Geometry of a whole coin stack laid out inside the jar interior.
+class _JarStackLayout {
+  const _JarStackLayout(this.coins, this.unit, this.height);
+
+  final List<_JarCoinSlot> coins;
+  final double unit; // diameter of a 1 coin
+  final double height; // vertical space the stack occupies
+}
+
 class _JarPainter extends CustomPainter {
   _JarPainter({
     required this.placed,
@@ -1003,7 +1020,12 @@ class _JarPainter extends CustomPainter {
     required this.elapsed,
   });
 
+  // Slot units across one row of the jar.
   static const _perRow = 4;
+  // Slot units a coin of each denomination occupies across a row.
+  static const _denomUnits = <int, int>{1: 1, 10: 2, 100: 4};
+  // Coin diameter relative to the unit (a 1 coin).
+  static const _denomDiameter = <int, double>{1: .88, 10: 1.68, 100: 3.3};
 
   final int placed;
   final int flightIndex;
@@ -1035,20 +1057,19 @@ class _JarPainter extends CustomPainter {
     );
     final inner = body.deflate(3.5);
     final centerX = size.width / 2;
-    final coinWidth = inner.width / (_perRow + .55);
-    final coinHeight = coinWidth * .36;
-    final coinRadius = coinWidth * .43;
+    final stack = _layoutStack(inner, placed);
+    final unit = stack.unit;
 
     // Interior: the coin stack, ripples and the entering coin are clipped so a
     // coin only appears once it is inside the jar.
     canvas.save();
     canvas.clipRRect(inner);
-    for (var index = 0; index < placed; index++) {
+    for (final coin in stack.coins) {
       _drawCoin(
         canvas,
-        _coinSlot(inner, coinWidth, coinHeight, index),
-        coinRadius,
-        flatten: coinHeight * .5,
+        coin.center,
+        coin.radius,
+        flatten: coin.height * .5,
         opacity: .96,
       );
     }
@@ -1056,12 +1077,14 @@ class _JarPainter extends CustomPainter {
       final p = Curves.easeOutCubic.transform(ripple.progress(elapsed));
       final Offset center;
       if (ripple.index != null) {
-        final slot = _coinSlot(inner, coinWidth, coinHeight, ripple.index!);
-        center = Offset(slot.dx, slot.dy - coinHeight * .5);
+        final slot = _slotFor(inner, ripple.index!);
+        center = slot == null
+            ? _pileTop(inner, stack, ripple.seedX ?? .5)
+            : Offset(slot.center.dx, slot.center.dy - slot.height * .5);
       } else {
-        center = _pileTop(inner, coinWidth, coinHeight, ripple.seedX ?? .5);
+        center = _pileTop(inner, stack, ripple.seedX ?? .5);
       }
-      final width = coinWidth * .8 + 16 * p;
+      final width = unit * .8 + 16 * p;
       canvas.drawOval(
         Rect.fromCenter(center: center, width: width, height: width * .26),
         Paint()
@@ -1071,21 +1094,23 @@ class _JarPainter extends CustomPainter {
       );
     }
     if (flightIndex >= 0 && flightIn && flightT > 0) {
-      final easeFall = Curves.easeInQuad.transform(flightT);
-      final easeDrift = Curves.easeOutCubic.transform(flightT);
-      final target = _coinSlot(inner, coinWidth, coinHeight, flightIndex);
-      final startX =
-          centerX + (flightIndex % 2 == 0 ? -1.0 : 1.0) * lidWidth * .08;
-      final x = lerpDouble(startX, target.dx, easeDrift)!;
-      final y = lerpDouble(bodyTop + 2, target.dy - 1, easeFall)!;
-      _drawCoin(
-        canvas,
-        Offset(x, y),
-        coinRadius,
-        flatten: lerpDouble(coinRadius, coinHeight * .5, easeFall),
-        spin: (1 - easeFall) * (flightIndex * 1.7 + flightT * math.pi * 2),
-        opacity: flightT < .12 ? flightT / .12 : 1,
-      );
+      final slot = _slotFor(inner, flightIndex);
+      if (slot != null) {
+        final easeFall = Curves.easeInQuad.transform(flightT);
+        final easeDrift = Curves.easeOutCubic.transform(flightT);
+        final startX =
+            centerX + (flightIndex % 2 == 0 ? -1.0 : 1.0) * lidWidth * .08;
+        final x = lerpDouble(startX, slot.center.dx, easeDrift)!;
+        final y = lerpDouble(bodyTop + 2, slot.center.dy - 1, easeFall)!;
+        _drawCoin(
+          canvas,
+          Offset(x, y),
+          slot.radius,
+          flatten: lerpDouble(slot.radius, slot.height * .5, easeFall),
+          spin: (1 - easeFall) * (flightIndex * 1.7 + flightT * math.pi * 2),
+          opacity: flightT < .12 ? flightT / .12 : 1,
+        );
+      }
     }
     for (final flow in flows) {
       if (!flow.inward || flow.progress(elapsed) <= 0) continue;
@@ -1096,28 +1121,29 @@ class _JarPainter extends CustomPainter {
         inner.left + inner.width / 2 + (flow.seed - .5) * lidWidth * .2,
         bodyTop + 2,
       );
-      final to = _pileTop(inner, coinWidth, coinHeight, flow.seed);
+      final to = _pileTop(inner, stack, flow.seed);
       final x = lerpDouble(from.dx, to.dx, easeDrift)!;
       final y = lerpDouble(from.dy, to.dy, easeFall)!;
       _drawCoin(
         canvas,
         Offset(x, y),
-        coinRadius,
-        flatten: lerpDouble(coinRadius, coinHeight * .5, easeFall),
+        unit * .44,
+        flatten: lerpDouble(unit * .44, unit * .18, easeFall),
         spin: (1 - easeFall) * (flow.seed * 6 + p * math.pi * 2),
         opacity: p < .12 ? p / .12 : 1,
       );
     }
     if (flightIndex >= 0 && !flightIn) {
+      final slot = _slotFor(inner, flightIndex);
       _drawExit(
         canvas: canvas,
         t: flightT,
         clippedPhase: true,
-        from: _coinSlot(inner, coinWidth, coinHeight, flightIndex),
+        from: slot?.center ?? _pileTop(inner, stack, .5),
         centerX: centerX,
         bodyTop: bodyTop,
-        coinRadius: coinRadius,
-        coinHeight: coinHeight,
+        coinRadius: slot?.radius ?? unit * .44,
+        coinHeight: slot?.height ?? unit * .36,
         side: flightIndex % 2 == 0 ? -1.0 : 1.0,
         drift: 10 + (flightIndex % 3) * 5,
       );
@@ -1128,11 +1154,11 @@ class _JarPainter extends CustomPainter {
         canvas: canvas,
         t: flow.progress(elapsed),
         clippedPhase: true,
-        from: _pileTop(inner, coinWidth, coinHeight, flow.seed),
+        from: _pileTop(inner, stack, flow.seed),
         centerX: centerX,
         bodyTop: bodyTop,
-        coinRadius: coinRadius,
-        coinHeight: coinHeight,
+        coinRadius: unit * .44,
+        coinHeight: unit * .36,
         side: flow.seed < .5 ? -1.0 : 1.0,
         drift: 10 + flow.seed * 14,
       );
@@ -1181,15 +1207,16 @@ class _JarPainter extends CustomPainter {
 
     // Above the glass: coins that slipped out of the slot drift away and fade.
     if (flightIndex >= 0 && !flightIn) {
+      final slot = _slotFor(inner, flightIndex);
       _drawExit(
         canvas: canvas,
         t: flightT,
         clippedPhase: false,
-        from: _coinSlot(inner, coinWidth, coinHeight, flightIndex),
+        from: slot?.center ?? _pileTop(inner, stack, .5),
         centerX: centerX,
         bodyTop: bodyTop,
-        coinRadius: coinRadius,
-        coinHeight: coinHeight,
+        coinRadius: slot?.radius ?? unit * .44,
+        coinHeight: slot?.height ?? unit * .36,
         side: flightIndex % 2 == 0 ? -1.0 : 1.0,
         drift: 10 + (flightIndex % 3) * 5,
       );
@@ -1200,31 +1227,116 @@ class _JarPainter extends CustomPainter {
         canvas: canvas,
         t: flow.progress(elapsed),
         clippedPhase: false,
-        from: _pileTop(inner, coinWidth, coinHeight, flow.seed),
+        from: _pileTop(inner, stack, flow.seed),
         centerX: centerX,
         bodyTop: bodyTop,
-        coinRadius: coinRadius,
-        coinHeight: coinHeight,
+        coinRadius: unit * .44,
+        coinHeight: unit * .36,
         side: flow.seed < .5 ? -1.0 : 1.0,
         drift: 10 + flow.seed * 14,
       );
     }
   }
 
-  Offset _pileTop(
-    RRect inner,
-    double coinWidth,
-    double coinHeight,
-    double seed,
-  ) {
-    if (placed <= 0) {
+  Offset _pileTop(RRect inner, _JarStackLayout stack, double seed) {
+    if (stack.coins.isEmpty) {
       return Offset(
         inner.left + inner.width * (.35 + .3 * seed),
-        inner.bottom - coinHeight * .55,
+        inner.bottom - stack.unit * .2,
       );
     }
-    final top = _coinSlot(inner, coinWidth, coinHeight, placed - 1);
-    return Offset(top.dx, top.dy - coinHeight * .55);
+    final top = stack.coins.last;
+    return Offset(top.center.dx, top.center.dy - top.height * .55);
+  }
+
+  /// Where the coin added as placement number [index] would sit in a stack of
+  /// exactly [index] + 1 coins — e.g. the 10th dollar becomes a big 10 coin.
+  _JarCoinSlot? _slotFor(RRect inner, int index) {
+    final layout = _layoutStack(inner, index + 1);
+    if (layout.coins.isEmpty) return null;
+    return layout.coins.last;
+  }
+
+  /// Breaks [count] dollars into 1 / 10 / 100 coins, packed into rows of
+  /// [_perRow] slot units with the biggest denominations at the bottom, e.g.
+  /// 234 -> [100], [10, 10], [1, 1, 1, 1] rows.
+  static List<List<int>> _rowsFor(int count) {
+    var hundreds = count ~/ 100;
+    var tens = (count % 100) ~/ 10;
+    var ones = count % 10;
+    final rows = <List<int>>[];
+    while (hundreds > 0 || tens > 0 || ones > 0) {
+      final row = <int>[];
+      var space = _perRow;
+      while (true) {
+        if (hundreds > 0 && space >= 4) {
+          row.add(100);
+          hundreds--;
+          space -= 4;
+        } else if (tens > 0 && space >= 2) {
+          row.add(10);
+          tens--;
+          space -= 2;
+        } else if (ones > 0 && space >= 1) {
+          row.add(1);
+          ones--;
+          space -= 1;
+        } else {
+          break;
+        }
+      }
+      if (row.isEmpty) break; // Safety: never loop without progress.
+      rows.add(row);
+    }
+    return rows;
+  }
+
+  /// Lays out a stack of [count] coins inside [inner], shrinking the coin size
+  /// when the pile would overflow the jar so any amount fits without a cap.
+  _JarStackLayout _layoutStack(RRect inner, int count) {
+    var unit = inner.width / (_perRow + .55);
+    var layout = _layoutWithUnit(inner, count, unit);
+    if (layout.height > inner.height * .96) {
+      unit *= inner.height * .96 / layout.height;
+      layout = _layoutWithUnit(inner, count, unit);
+    }
+    return layout;
+  }
+
+  _JarStackLayout _layoutWithUnit(RRect inner, int count, double unit) {
+    final coins = <_JarCoinSlot>[];
+    var y = inner.bottom;
+    var index = 0;
+    for (final row in _rowsFor(count)) {
+      var rowUnits = 0;
+      var rowHeight = 0.0;
+      for (final denom in row) {
+        rowUnits += _denomUnits[denom]!;
+        final h = unit * _denomDiameter[denom]! * .36;
+        if (h > rowHeight) rowHeight = h;
+      }
+      var x = inner.left + (inner.width - rowUnits * unit * 1.02) / 2;
+      for (final denom in row) {
+        final diameter = unit * _denomDiameter[denom]!;
+        final span = _denomUnits[denom]! * unit * 1.02;
+        final jitter = ((index * 37) % 5 - 2) * unit * .07;
+        coins.add(
+          _JarCoinSlot(
+            denom,
+            Offset(x + span / 2 + jitter, y - rowHeight * .55),
+            diameter / 2,
+            diameter * .36,
+          ),
+        );
+        x += span;
+        index++;
+      }
+      y -= rowHeight * .88;
+    }
+    final height = coins.isEmpty
+        ? 0.0
+        : inner.bottom - (coins.last.center.dy - coins.last.height * .5);
+    return _JarStackLayout(coins, unit, height);
   }
 
   /// A leaving coin travels in two phases: first it slides across the pile to
@@ -1275,21 +1387,6 @@ class _JarPainter extends CustomPainter {
         opacity: u < .45 ? 1 : 1 - (u - .45) / .55,
       );
     }
-  }
-
-  Offset _coinSlot(
-    RRect inner,
-    double coinWidth,
-    double coinHeight,
-    int index,
-  ) {
-    final row = index ~/ _perRow;
-    final col = index % _perRow;
-    final jitter = ((index * 37) % 5 - 2) * .5;
-    return Offset(
-      inner.left + coinWidth * .55 + col * coinWidth * 1.02 + jitter,
-      inner.bottom - coinHeight * .55 - row * coinHeight * .88,
-    );
   }
 
   static const _goldHi = Color(0xFFFFF0C4);
