@@ -62,6 +62,7 @@ class _AppShellState extends State<AppShell> {
       ),
       AiPage(
         repository: _marketRepository,
+        positionRepository: _positionRepository,
         active: _index == 2,
         onOpenRisk: _openRisk,
         onOpenReview: _openReview,
