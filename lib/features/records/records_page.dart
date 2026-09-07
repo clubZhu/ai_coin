@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
 import '../../data/live_price_service.dart';
+import '../../data/position_record_export_service.dart';
 import '../../data/position_repository.dart';
 import '../../domain/position_record.dart';
 import '../../domain/trading_assets.dart';
@@ -33,6 +34,7 @@ class _RecordsPageState extends State<RecordsPage> {
 
   _RecordFilterValue _recordFilter = _RecordFilterValue.all;
   bool _loadingRecords = true;
+  bool _exportingRecords = false;
   final Set<String> _expandedRecordIds = {};
 
   void _toggleRecordExpanded(String id) {
@@ -152,6 +154,26 @@ class _RecordsPageState extends State<RecordsPage> {
     }
   }
 
+  Future<void> _shareRecords() async {
+    if (_loadingRecords || _records.isEmpty || _exportingRecords) return;
+    setState(() => _exportingRecords = true);
+    try {
+      await PositionRecordExportService.shareCsv(_records);
+    } on PlatformException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('导出分享失败，请稍后重试')));
+    } on MissingPluginException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前设备暂不支持导出分享')));
+    } finally {
+      if (mounted) setState(() => _exportingRecords = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final visibleRecords = switch (_recordFilter) {
@@ -187,6 +209,14 @@ class _RecordsPageState extends State<RecordsPage> {
             letterSpacing: -.3,
           ),
         ),
+        actions: [
+          _ExportRecordsButton(
+            enabled: !_loadingRecords && _records.isNotEmpty,
+            loading: _exportingRecords,
+            onPressed: _shareRecords,
+          ),
+          const SizedBox(width: 12),
+        ],
       ),
       body: PageFrame(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
@@ -276,6 +306,76 @@ const _recordCaptionStyle = TextStyle(
   height: 1.4,
   fontWeight: FontWeight.w400,
 );
+
+class _ExportRecordsButton extends StatelessWidget {
+  const _ExportRecordsButton({
+    required this.enabled,
+    required this.loading,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final bool loading;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final canTap = enabled && !loading;
+    final foreground = loading
+        ? AppColors.teal
+        : enabled
+        ? AppColors.teal
+        : AppColors.muted.withValues(alpha: .55);
+    return Center(
+      child: Semantics(
+        button: true,
+        enabled: canTap,
+        label: '导出分享交易记录',
+        child: Material(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            onTap: canTap ? onPressed : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: 36,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (loading)
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation(foreground),
+                      ),
+                    )
+                  else
+                    Icon(Icons.ios_share_rounded, size: 15, color: foreground),
+                  const SizedBox(width: 6),
+                  Text(
+                    loading ? '导出中' : '导出',
+                    style: TextStyle(
+                      color: foreground,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _RecordsOverview extends StatelessWidget {
   const _RecordsOverview({

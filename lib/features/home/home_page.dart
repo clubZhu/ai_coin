@@ -1292,6 +1292,11 @@ class _JarPainter extends CustomPainter {
     );
   }
 
+  static const _goldHi = Color(0xFFFFF0C4);
+  static const _goldLight = Color(0xFFF8CE6B);
+  static const _goldMid = Color(0xFFE8A93C);
+  static const _goldRim = Color(0xFF9C650F);
+
   void _drawCoin(
     Canvas canvas,
     Offset center,
@@ -1300,33 +1305,110 @@ class _JarPainter extends CustomPainter {
     double opacity = 1,
     double? flatten,
   }) {
-    final ry = (flatten ?? radius).clamp(0.5, radius);
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    if (spin != 0) canvas.rotate(spin);
+    final ry = (flatten ?? radius).clamp(radius * .2, radius);
     final rect = Rect.fromCenter(
       center: Offset.zero,
       width: radius * 2,
       height: ry * 2,
     );
-    canvas.drawOval(
-      rect,
-      Paint()..color = AppColors.amberSoft.withValues(alpha: opacity),
-    );
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    if (spin != 0) canvas.rotate(spin);
+
+    if (ry < radius * .62) {
+      // Coin edge (side view): a minted gold band with a lit upper rim.
+      canvas.drawOval(
+        rect,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              _goldHi.withValues(alpha: opacity),
+              _goldLight.withValues(alpha: opacity),
+              AppColors.amber.withValues(alpha: opacity),
+            ],
+            stops: const [0, .42, 1],
+          ).createShader(rect),
+      );
+      canvas.drawArc(
+        rect.deflate(.7),
+        math.pi * 1.1,
+        math.pi * .8,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .8
+          ..strokeCap = StrokeCap.round
+          ..color = Colors.white.withValues(alpha: .65 * opacity),
+      );
+    } else {
+      // Coin face: metallic radial sheen with an embossed mint ring.
+      canvas.drawOval(
+        rect,
+        Paint()
+          ..shader = RadialGradient(
+            center: const Alignment(-.38, -.42),
+            radius: 1.25,
+            colors: [
+              _goldHi.withValues(alpha: opacity),
+              _goldLight.withValues(alpha: opacity),
+              _goldMid.withValues(alpha: opacity),
+              AppColors.amber.withValues(alpha: opacity),
+            ],
+            stops: const [0, .38, .72, 1],
+          ).createShader(rect),
+      );
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: radius * 1.46,
+          height: ry * 1.46,
+        ),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .8
+          ..color = AppColors.amber.withValues(alpha: .5 * opacity),
+      );
+      // Specular crescent hugging the upper-left rim.
+      canvas.drawArc(
+        rect.deflate(radius * .14),
+        math.pi * 1.02,
+        math.pi * .5,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = radius * .17
+          ..strokeCap = StrokeCap.round
+          ..color = Colors.white.withValues(alpha: .78 * opacity),
+      );
+      // Soft reflected light on the lower-right rim.
+      canvas.drawArc(
+        rect.deflate(radius * .12),
+        math.pi * .04,
+        math.pi * .3,
+        false,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = radius * .1
+          ..strokeCap = StrokeCap.round
+          ..color = Colors.white.withValues(alpha: .28 * opacity),
+      );
+      // Sharp glint where the light source hits.
+      canvas.drawCircle(
+        Offset(-radius * .36, -ry * .38),
+        radius * .13,
+        Paint()..color = Colors.white.withValues(alpha: .92 * opacity),
+      );
+    }
+    // Dark minted outer rim for definition against the pile.
     canvas.drawOval(
       rect,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.1
-        ..color = AppColors.amber.withValues(alpha: .75 * opacity),
+        ..strokeWidth = 1
+        ..color = _goldRim.withValues(alpha: .8 * opacity),
     );
-    if (ry > radius * .6) {
-      canvas.drawCircle(
-        Offset(-radius * .32, -ry * .32),
-        radius * .3,
-        Paint()..color = Colors.white.withValues(alpha: .8 * opacity),
-      );
-    }
     canvas.restore();
   }
 
