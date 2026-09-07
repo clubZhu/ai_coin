@@ -402,8 +402,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              const _HomeFieldLabel('价格'),
+
               const SizedBox(height: 8),
               TextField(
                 key: const ValueKey('entry-price-input'),
@@ -844,6 +843,20 @@ class _ProfitJarCardState extends State<_ProfitJarCard>
     return amount.floor();
   }
 
+  static ({int threshold, int denomination})? _latestExchange(
+    int from,
+    int to,
+  ) {
+    if (to <= from) return null;
+    for (final denomination in const [1000, 100, 10]) {
+      final threshold = (to ~/ denomination) * denomination;
+      if (threshold > from) {
+        return (threshold: threshold, denomination: denomination);
+      }
+    }
+    return null;
+  }
+
   void _onTick(Duration elapsed) {
     _elapsed = elapsed;
     if (_countAnimating) {
@@ -863,7 +876,14 @@ class _ProfitJarCardState extends State<_ProfitJarCard>
         _flightIndex = -1;
       }
       if (v > _lastPlaced && _ripples.length < 3) {
-        _ripples.add(_JarRipple(start: elapsed, index: _lastPlaced));
+        final exchange = _latestExchange(_lastPlaced, _placed);
+        _ripples.add(
+          _JarRipple(
+            start: elapsed,
+            index: exchange == null ? _lastPlaced : exchange.threshold - 1,
+            exchangeDenomination: exchange?.denomination,
+          ),
+        );
       }
       _lastPlaced = _placed;
       if (t >= 1) {
@@ -898,8 +918,8 @@ class _ProfitJarCardState extends State<_ProfitJarCard>
       child: Row(
         children: [
           SizedBox(
-            width: 92,
-            height: 124,
+            width: 96,
+            height: 116,
             child: CustomPaint(
               painter: _JarPainter(
                 placed: _placed,
@@ -958,11 +978,17 @@ class _ProfitJarCardState extends State<_ProfitJarCard>
 }
 
 class _JarRipple {
-  _JarRipple({required this.start, this.index, this.seedX});
+  _JarRipple({
+    required this.start,
+    this.index,
+    this.seedX,
+    this.exchangeDenomination,
+  });
 
   final Duration start;
   final int? index;
   final double? seedX;
+  final int? exchangeDenomination;
 
   bool isFinished(Duration elapsed) => elapsed >= start + _kJarRippleDuration;
 
@@ -990,14 +1016,21 @@ class _JarFlowCoin {
       );
 }
 
-/// One coin in the jar: a 1, 10 or 100 coin with its laid-out geometry.
+/// One stored-value piece in the jar: 1U / 10U / 100U coin or a 1000U diamond.
 class _JarCoinSlot {
-  const _JarCoinSlot(this.denom, this.center, this.radius, this.height);
+  const _JarCoinSlot(
+    this.denom,
+    this.center,
+    this.radius,
+    this.height,
+    this.angle,
+  );
 
   final int denom;
   final Offset center;
   final double radius;
   final double height;
+  final double angle;
 }
 
 /// Geometry of a whole coin stack laid out inside the jar interior.
@@ -1020,12 +1053,15 @@ class _JarPainter extends CustomPainter {
     required this.elapsed,
   });
 
-  // Slot units across one row of the jar.
-  static const _perRow = 4;
-  // Slot units a coin of each denomination occupies across a row.
-  static const _denomUnits = <int, int>{1: 1, 10: 2, 100: 4};
-  // Coin diameter relative to the unit (a 1 coin).
-  static const _denomDiameter = <int, double>{1: .88, 10: 1.68, 100: 3.3};
+  // Six unit slots per row. Higher-value pieces are wider and more prominent.
+  static const _perRow = 6;
+  static const _denomUnits = <int, int>{1: 1, 10: 2, 100: 3, 1000: 3};
+  static const _denomDiameter = <int, double>{
+    1: .88,
+    10: 1.86,
+    100: 2.28,
+    1000: 2.64,
+  };
 
   final int placed;
   final int flightIndex;
@@ -1059,17 +1095,70 @@ class _JarPainter extends CustomPainter {
     final centerX = size.width / 2;
     final stack = _layoutStack(inner, placed);
     final unit = stack.unit;
+    final neckHalfWidth = lidWidth * .34;
+    final bodyPath = Path()
+      ..moveTo(centerX - neckHalfWidth, bodyTop)
+      ..lineTo(centerX + neckHalfWidth, bodyTop)
+      ..cubicTo(
+        centerX + lidWidth * .48,
+        bodyTop + size.height * .035,
+        body.right,
+        bodyTop + size.height * .12,
+        body.right,
+        bodyTop + size.height * .2,
+      )
+      ..lineTo(body.right, body.bottom - 16)
+      ..quadraticBezierTo(body.right, body.bottom, body.right - 16, body.bottom)
+      ..lineTo(body.left + 16, body.bottom)
+      ..quadraticBezierTo(body.left, body.bottom, body.left, body.bottom - 16)
+      ..lineTo(body.left, bodyTop + size.height * .2)
+      ..cubicTo(
+        body.left,
+        bodyTop + size.height * .12,
+        centerX - lidWidth * .48,
+        bodyTop + size.height * .035,
+        centerX - neckHalfWidth,
+        bodyTop,
+      )
+      ..close();
+
+    // The soft footprint and warm bounce are part of the object, not a card
+    // shadow. They help the transparent glass read against the white panel.
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(centerX, body.bottom + 1.5),
+        width: body.width * .78,
+        height: 8,
+      ),
+      Paint()
+        ..color = AppColors.ink.withValues(alpha: .08)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4),
+    );
+    if (stack.coins.isNotEmpty) {
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset(centerX, body.bottom - 10),
+          width: body.width * .7,
+          height: 22,
+        ),
+        Paint()
+          ..color = AppColors.amberSoft.withValues(alpha: .55)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      );
+    }
 
     // Interior: the coin stack, ripples and the entering coin are clipped so a
     // coin only appears once it is inside the jar.
     canvas.save();
-    canvas.clipRRect(inner);
+    canvas.clipPath(bodyPath);
     for (final coin in stack.coins) {
-      _drawCoin(
+      _drawPiece(
         canvas,
         coin.center,
         coin.radius,
         flatten: coin.height * .5,
+        spin: coin.angle,
+        denomination: coin.denom,
         opacity: .96,
       );
     }
@@ -1092,6 +1181,23 @@ class _JarPainter extends CustomPainter {
           ..strokeWidth = 1.2
           ..color = AppColors.amber.withValues(alpha: .38 * (1 - p)),
       );
+      if (p > .16) {
+        final delayed = ((p - .16) / .84).clamp(0.0, 1.0);
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: center,
+            width: unit * .55 + 12 * delayed,
+            height: (unit * .55 + 12 * delayed) * .22,
+          ),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = .8
+            ..color = _goldLight.withValues(alpha: .28 * (1 - delayed)),
+        );
+      }
+      if (ripple.exchangeDenomination != null) {
+        _drawExchangeFlash(canvas, center, p, ripple.exchangeDenomination!);
+      }
     }
     if (flightIndex >= 0 && flightIn && flightT > 0) {
       final slot = _slotFor(inner, flightIndex);
@@ -1101,13 +1207,18 @@ class _JarPainter extends CustomPainter {
         final startX =
             centerX + (flightIndex % 2 == 0 ? -1.0 : 1.0) * lidWidth * .08;
         final x = lerpDouble(startX, slot.center.dx, easeDrift)!;
-        final y = lerpDouble(bodyTop + 2, slot.center.dy - 1, easeFall)!;
-        _drawCoin(
+        final bounce = easeFall > .78
+            ? math.sin((easeFall - .78) / .22 * math.pi) * unit * .09
+            : 0.0;
+        final y =
+            lerpDouble(bodyTop + 2, slot.center.dy - 1, easeFall)! - bounce;
+        _drawPiece(
           canvas,
           Offset(x, y),
           slot.radius,
           flatten: lerpDouble(slot.radius, slot.height * .5, easeFall),
           spin: (1 - easeFall) * (flightIndex * 1.7 + flightT * math.pi * 2),
+          denomination: slot.denom,
           opacity: flightT < .12 ? flightT / .12 : 1,
         );
       }
@@ -1123,13 +1234,17 @@ class _JarPainter extends CustomPainter {
       );
       final to = _pileTop(inner, stack, flow.seed);
       final x = lerpDouble(from.dx, to.dx, easeDrift)!;
-      final y = lerpDouble(from.dy, to.dy, easeFall)!;
-      _drawCoin(
+      final bounce = easeFall > .78
+          ? math.sin((easeFall - .78) / .22 * math.pi) * unit * .09
+          : 0.0;
+      final y = lerpDouble(from.dy, to.dy, easeFall)! - bounce;
+      _drawPiece(
         canvas,
         Offset(x, y),
         unit * .44,
         flatten: lerpDouble(unit * .44, unit * .18, easeFall),
         spin: (1 - easeFall) * (flow.seed * 6 + p * math.pi * 2),
+        denomination: 1,
         opacity: p < .12 ? p / .12 : 1,
       );
     }
@@ -1144,6 +1259,7 @@ class _JarPainter extends CustomPainter {
         bodyTop: bodyTop,
         coinRadius: slot?.radius ?? unit * .44,
         coinHeight: slot?.height ?? unit * .36,
+        denomination: slot?.denom ?? 1,
         side: flightIndex % 2 == 0 ? -1.0 : 1.0,
         drift: 10 + (flightIndex % 3) * 5,
       );
@@ -1159,40 +1275,99 @@ class _JarPainter extends CustomPainter {
         bodyTop: bodyTop,
         coinRadius: unit * .44,
         coinHeight: unit * .36,
+        denomination: 1,
         side: flow.seed < .5 ? -1.0 : 1.0,
         drift: 10 + flow.seed * 14,
       );
     }
     canvas.restore();
 
-    // Glass body.
-    canvas.drawRRect(
-      body,
+    // Double glass rim, thick base refraction and asymmetric highlights give
+    // the jar depth while keeping the body visually transparent.
+    canvas.drawPath(
+      bodyPath,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = AppColors.muted.withValues(alpha: .38),
+        ..strokeWidth = 2
+        ..color = const Color(0xFF9DAEB5).withValues(alpha: .5),
     );
-    canvas.drawRRect(
-      RRect.fromRectAndCorners(
-        Rect.fromLTWH(inner.left + 5, bodyTop + 9, 5, inner.height * .42),
-        topLeft: const Radius.circular(2.5),
-        topRight: const Radius.circular(2.5),
-        bottomLeft: const Radius.circular(2.5),
-        bottomRight: const Radius.circular(2.5),
+    canvas.drawPath(
+      bodyPath,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = .8
+        ..color = Colors.white.withValues(alpha: .9),
+    );
+    final leftGlint = Path()
+      ..moveTo(body.left + 8, bodyTop + 23)
+      ..cubicTo(
+        body.left + 4,
+        bodyTop + 38,
+        body.left + 7,
+        body.bottom - 34,
+        body.left + 12,
+        body.bottom - 25,
+      );
+    canvas.drawPath(
+      leftGlint,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.2
+        ..strokeCap = StrokeCap.round
+        ..color = Colors.white.withValues(alpha: .82),
+    );
+    canvas.drawArc(
+      Rect.fromLTRB(
+        body.left + 8,
+        body.bottom - 17,
+        body.right - 8,
+        body.bottom - 3,
       ),
-      Paint()..color = Colors.white.withValues(alpha: .6),
+      .12,
+      math.pi - .24,
+      false,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round
+        ..color = const Color(0xFFB6C6CB).withValues(alpha: .42),
     );
 
     // Lid and coin slot.
-    canvas.drawRRect(lid, Paint()..color = AppColors.background);
+    final lidShadow = lid.shift(const Offset(0, 2));
+    canvas.drawRRect(
+      lidShadow,
+      Paint()
+        ..color = AppColors.ink.withValues(alpha: .1)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
+    );
+    canvas.drawRRect(
+      lid,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.white, Color(0xFFE5EAEC), Color(0xFFCAD3D6)],
+          stops: [0, .55, 1],
+        ).createShader(lidRect),
+    );
     canvas.drawRRect(
       lid,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = AppColors.muted.withValues(alpha: .38),
+        ..strokeWidth = 1
+        ..color = const Color(0xFF84969D).withValues(alpha: .65),
     );
+    for (var i = 1; i <= 3; i++) {
+      final y = lidRect.top + lidRect.height * i / 4;
+      canvas.drawLine(
+        Offset(lidRect.left + 4, y),
+        Offset(lidRect.right - 4, y),
+        Paint()
+          ..strokeWidth = .55
+          ..color = Colors.white.withValues(alpha: .72),
+      );
+    }
     canvas.drawRRect(
       RRect.fromRectAndRadius(
         Rect.fromCenter(
@@ -1202,7 +1377,12 @@ class _JarPainter extends CustomPainter {
         ),
         const Radius.circular(2),
       ),
-      Paint()..color = AppColors.ink.withValues(alpha: .32),
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF48575D), Color(0xFF9AA7AB)],
+        ).createShader(lidRect),
     );
 
     // Above the glass: coins that slipped out of the slot drift away and fade.
@@ -1217,6 +1397,7 @@ class _JarPainter extends CustomPainter {
         bodyTop: bodyTop,
         coinRadius: slot?.radius ?? unit * .44,
         coinHeight: slot?.height ?? unit * .36,
+        denomination: slot?.denom ?? 1,
         side: flightIndex % 2 == 0 ? -1.0 : 1.0,
         drift: 10 + (flightIndex % 3) * 5,
       );
@@ -1232,6 +1413,7 @@ class _JarPainter extends CustomPainter {
         bodyTop: bodyTop,
         coinRadius: unit * .44,
         coinHeight: unit * .36,
+        denomination: 1,
         side: flow.seed < .5 ? -1.0 : 1.0,
         drift: 10 + flow.seed * 14,
       );
@@ -1257,47 +1439,36 @@ class _JarPainter extends CustomPainter {
     return layout.coins.last;
   }
 
-  /// Breaks [count] dollars into 1 / 10 / 100 coins, packed into rows of
-  /// [_perRow] slot units with the biggest denominations at the bottom, e.g.
-  /// 234 -> [100], [10, 10], [1, 1, 1, 1] rows.
+  /// Performs the base-ten exchange inside the jar:
+  /// 10 × 1U -> 1 × 10U, 10 × 10U -> 1 × 100U,
+  /// 10 × 100U -> 1 × 1000U diamond.
   static List<List<int>> _rowsFor(int count) {
-    var hundreds = count ~/ 100;
-    var tens = (count % 100) ~/ 10;
-    var ones = count % 10;
     final rows = <List<int>>[];
-    while (hundreds > 0 || tens > 0 || ones > 0) {
-      final row = <int>[];
-      var space = _perRow;
-      while (true) {
-        if (hundreds > 0 && space >= 4) {
-          row.add(100);
-          hundreds--;
-          space -= 4;
-        } else if (tens > 0 && space >= 2) {
-          row.add(10);
-          tens--;
-          space -= 2;
-        } else if (ones > 0 && space >= 1) {
-          row.add(1);
-          ones--;
-          space -= 1;
-        } else {
-          break;
-        }
+    final pieces = <int, int>{
+      1000: count ~/ 1000,
+      100: (count % 1000) ~/ 100,
+      10: (count % 100) ~/ 10,
+      1: count % 10,
+    };
+    for (final denomination in const [1000, 100, 10, 1]) {
+      var remaining = pieces[denomination]!;
+      final piecesPerRow = _perRow ~/ _denomUnits[denomination]!;
+      while (remaining > 0) {
+        final length = math.min(piecesPerRow, remaining);
+        rows.add(List<int>.filled(length, denomination));
+        remaining -= length;
       }
-      if (row.isEmpty) break; // Safety: never loop without progress.
-      rows.add(row);
     }
     return rows;
   }
 
   /// Lays out a stack of [count] coins inside [inner], shrinking the coin size
-  /// when the pile would overflow the jar so any amount fits without a cap.
+  /// when the pile would otherwise crowd the shoulders of the jar.
   _JarStackLayout _layoutStack(RRect inner, int count) {
     var unit = inner.width / (_perRow + .55);
     var layout = _layoutWithUnit(inner, count, unit);
-    if (layout.height > inner.height * .96) {
-      unit *= inner.height * .96 / layout.height;
+    if (layout.height > inner.height * .72) {
+      unit *= inner.height * .72 / layout.height;
       layout = _layoutWithUnit(inner, count, unit);
     }
     return layout;
@@ -1310,28 +1481,46 @@ class _JarPainter extends CustomPainter {
     for (final row in _rowsFor(count)) {
       var rowUnits = 0;
       var rowHeight = 0.0;
-      for (final denom in row) {
-        rowUnits += _denomUnits[denom]!;
-        final h = unit * _denomDiameter[denom]! * .36;
+      for (var column = 0; column < row.length; column++) {
+        final denomination = row[column];
+        rowUnits += _denomUnits[denomination]!;
+        final diameter = unit * _denomDiameter[denomination]!;
+        final faceFactor = switch (denomination) {
+          1 => (index + column) % 4 == 0 ? .7 : .5,
+          10 => .7,
+          100 => .76,
+          _ => .82,
+        };
+        final h = diameter * faceFactor;
         if (h > rowHeight) rowHeight = h;
       }
-      var x = inner.left + (inner.width - rowUnits * unit * 1.02) / 2;
+      final rowWidth = rowUnits * unit * 1.02;
+      var x = inner.left + (inner.width - rowWidth) / 2;
       for (final denom in row) {
         final diameter = unit * _denomDiameter[denom]!;
         final span = _denomUnits[denom]! * unit * 1.02;
-        final jitter = ((index * 37) % 5 - 2) * unit * .07;
+        final jitterX = ((index * 37) % 5 - 2) * unit * .045;
+        final jitterY = ((index * 29) % 3 - 1) * unit * .025;
+        final faceFactor = switch (denom) {
+          1 => index % 4 == 0 ? .7 : .5,
+          10 => .7,
+          100 => .76,
+          _ => .82,
+        };
+        final angle = ((index * 17) % 7 - 3) * .025;
         coins.add(
           _JarCoinSlot(
             denom,
-            Offset(x + span / 2 + jitter, y - rowHeight * .55),
+            Offset(x + span / 2 + jitterX, y - rowHeight * .55 + jitterY),
             diameter / 2,
-            diameter * .36,
+            diameter * faceFactor,
+            angle,
           ),
         );
         x += span;
         index++;
       }
-      y -= rowHeight * .88;
+      y -= rowHeight * .78;
     }
     final height = coins.isEmpty
         ? 0.0
@@ -1352,6 +1541,7 @@ class _JarPainter extends CustomPainter {
     required double bodyTop,
     required double coinRadius,
     required double coinHeight,
+    required int denomination,
     required double side,
     required double drift,
   }) {
@@ -1366,12 +1556,13 @@ class _JarPainter extends CustomPainter {
         bodyTop + 1,
         Curves.easeInQuad.transform(u),
       )!;
-      _drawCoin(
+      _drawPiece(
         canvas,
         Offset(x, y),
         coinRadius,
         flatten: lerpDouble(coinHeight * .5, coinRadius, u),
         spin: (1 - u) * side * 1.2,
+        denomination: denomination,
         opacity: 1,
       );
     } else {
@@ -1379,11 +1570,12 @@ class _JarPainter extends CustomPainter {
       final ease = Curves.easeOutCubic.transform(u);
       final x = centerX + side * drift * ease;
       final y = lerpDouble(bodyTop, -8, ease)!;
-      _drawCoin(
+      _drawPiece(
         canvas,
         Offset(x, y),
         coinRadius,
         spin: side * ease * math.pi * .8,
+        denomination: denomination,
         opacity: u < .45 ? 1 : 1 - (u - .45) / .55,
       );
     }
@@ -1394,6 +1586,164 @@ class _JarPainter extends CustomPainter {
   static const _goldMid = Color(0xFFE8A93C);
   static const _goldRim = Color(0xFF9C650F);
 
+  ({Color hi, Color light, Color mid, Color rim}) _paletteFor(
+    int denomination,
+  ) {
+    return switch (denomination) {
+      100 => (
+        hi: const Color(0xFFFFEBDD),
+        light: const Color(0xFFF2BA91),
+        mid: const Color(0xFFC96F43),
+        rim: const Color(0xFF74351F),
+      ),
+      10 => (
+        hi: const Color(0xFFFFF8D7),
+        light: const Color(0xFFFFD85A),
+        mid: const Color(0xFFE9A11A),
+        rim: const Color(0xFF8D5600),
+      ),
+      _ => (hi: _goldHi, light: _goldLight, mid: _goldMid, rim: _goldRim),
+    };
+  }
+
+  void _drawPiece(
+    Canvas canvas,
+    Offset center,
+    double radius, {
+    double spin = 0,
+    double opacity = 1,
+    double? flatten,
+    int denomination = 1,
+  }) {
+    if (denomination >= 1000) {
+      _drawDiamond(canvas, center, radius, spin: spin, opacity: opacity);
+      return;
+    }
+    _drawCoin(
+      canvas,
+      center,
+      radius,
+      spin: spin,
+      opacity: opacity,
+      flatten: flatten,
+      denomination: denomination,
+    );
+  }
+
+  void _drawExchangeFlash(
+    Canvas canvas,
+    Offset center,
+    double progress,
+    int denomination,
+  ) {
+    final fade = (1 - progress).clamp(0.0, 1.0);
+    final color = denomination >= 1000
+        ? const Color(0xFF70C9DE)
+        : _paletteFor(denomination).light;
+    final radius = 7 + 14 * Curves.easeOutCubic.transform(progress);
+    canvas.drawCircle(
+      center,
+      radius,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = color.withValues(alpha: .48 * fade),
+    );
+    for (var i = 0; i < 6; i++) {
+      final angle = math.pi * 2 * i / 6;
+      final inner = Offset(
+        center.dx + math.cos(angle) * radius * .68,
+        center.dy + math.sin(angle) * radius * .36,
+      );
+      final outer = Offset(
+        center.dx + math.cos(angle) * radius,
+        center.dy + math.sin(angle) * radius * .52,
+      );
+      canvas.drawLine(
+        inner,
+        outer,
+        Paint()
+          ..strokeWidth = 1
+          ..strokeCap = StrokeCap.round
+          ..color = color.withValues(alpha: .72 * fade),
+      );
+    }
+  }
+
+  void _drawDiamond(
+    Canvas canvas,
+    Offset center,
+    double radius, {
+    double spin = 0,
+    double opacity = 1,
+  }) {
+    final height = radius * 1.62;
+    final diamond = Path()
+      ..moveTo(-radius * .56, -height * .42)
+      ..lineTo(radius * .56, -height * .42)
+      ..lineTo(radius, -height * .12)
+      ..lineTo(0, height * .58)
+      ..lineTo(-radius, -height * .12)
+      ..close();
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    if (spin != 0) canvas.rotate(spin);
+    canvas.save();
+    canvas.translate(radius * .08, height * .09);
+    canvas.drawPath(
+      diamond,
+      Paint()..color = AppColors.blue.withValues(alpha: .22 * opacity),
+    );
+    canvas.restore();
+    final bounds = diamond.getBounds();
+    canvas.drawPath(
+      diamond,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-.46, -.52),
+          radius: 1.25,
+          colors: [
+            Colors.white.withValues(alpha: opacity),
+            const Color(0xFFC9F3F7).withValues(alpha: opacity),
+            const Color(0xFF77C9DE).withValues(alpha: opacity),
+            const Color(0xFF3E87A5).withValues(alpha: opacity),
+          ],
+          stops: const [0, .3, .68, 1],
+        ).createShader(bounds),
+    );
+    final topCenter = Offset(0, -height * .42);
+    final left = Offset(-radius, -height * .12);
+    final right = Offset(radius, -height * .12);
+    final bottom = Offset(0, height * .58);
+    final ridgeLeft = Offset(-radius * .38, -height * .12);
+    final ridgeRight = Offset(radius * .38, -height * .12);
+    final facetPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = .65
+      ..color = Colors.white.withValues(alpha: .62 * opacity);
+    canvas.drawLine(topCenter, ridgeLeft, facetPaint);
+    canvas.drawLine(topCenter, ridgeRight, facetPaint);
+    canvas.drawLine(left, ridgeLeft, facetPaint);
+    canvas.drawLine(right, ridgeRight, facetPaint);
+    canvas.drawLine(ridgeLeft, bottom, facetPaint);
+    canvas.drawLine(ridgeRight, bottom, facetPaint);
+    canvas.drawLine(topCenter, bottom, facetPaint);
+    canvas.drawPath(
+      diamond,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = const Color(0xFF377A98).withValues(alpha: .72 * opacity),
+    );
+    canvas.drawCircle(
+      Offset(-radius * .48, -height * .25),
+      math.max(.65, radius * .08),
+      Paint()..color = Colors.white.withValues(alpha: .94 * opacity),
+    );
+    canvas.restore();
+  }
+
   void _drawCoin(
     Canvas canvas,
     Offset center,
@@ -1401,7 +1751,9 @@ class _JarPainter extends CustomPainter {
     double spin = 0,
     double opacity = 1,
     double? flatten,
+    int denomination = 1,
   }) {
+    final palette = _paletteFor(denomination);
     final ry = (flatten ?? radius).clamp(radius * .2, radius);
     final rect = Rect.fromCenter(
       center: Offset.zero,
@@ -1412,8 +1764,20 @@ class _JarPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     if (spin != 0) canvas.rotate(spin);
 
+    // Contact shadow remains crisp enough to read at icon size and separates
+    // overlapping coins without using an expensive blur on every piece.
+    canvas.drawOval(
+      rect.shift(Offset(radius * .1, math.max(.7, ry * .3))),
+      Paint()..color = palette.rim.withValues(alpha: .24 * opacity),
+    );
+
     if (ry < radius * .62) {
-      // Coin edge (side view): a minted gold band with a lit upper rim.
+      // Coin edge (side view): darker lower lip, metallic band and fine minted
+      // grooves make even the thin coins read as solid objects.
+      canvas.drawOval(
+        rect.shift(Offset(0, math.max(.8, ry * .34))),
+        Paint()..color = palette.rim.withValues(alpha: .9 * opacity),
+      );
       canvas.drawOval(
         rect,
         Paint()
@@ -1421,13 +1785,24 @@ class _JarPainter extends CustomPainter {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors: [
-              _goldHi.withValues(alpha: opacity),
-              _goldLight.withValues(alpha: opacity),
-              AppColors.amber.withValues(alpha: opacity),
+              palette.hi.withValues(alpha: opacity),
+              palette.light.withValues(alpha: opacity),
+              palette.mid.withValues(alpha: opacity),
+              palette.rim.withValues(alpha: opacity),
             ],
-            stops: const [0, .42, 1],
+            stops: const [0, .28, .7, 1],
           ).createShader(rect),
       );
+      for (var i = 1; i <= 3; i++) {
+        final y = lerpDouble(rect.top, rect.bottom, i / 4)!;
+        canvas.drawLine(
+          Offset(rect.left + radius * .18, y),
+          Offset(rect.right - radius * .18, y),
+          Paint()
+            ..strokeWidth = .35
+            ..color = palette.hi.withValues(alpha: .45 * opacity),
+        );
+      }
       canvas.drawArc(
         rect.deflate(.7),
         math.pi * 1.1,
@@ -1440,21 +1815,36 @@ class _JarPainter extends CustomPainter {
           ..color = Colors.white.withValues(alpha: .65 * opacity),
       );
     } else {
-      // Coin face: metallic radial sheen with an embossed mint ring.
+      // Coin face: the dark outer disc becomes the raised edge, while a
+      // separate inset face, beading and embossed mark sell the minted depth.
       canvas.drawOval(
         rect,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              palette.light.withValues(alpha: opacity),
+              palette.rim.withValues(alpha: opacity),
+              palette.mid.withValues(alpha: opacity),
+            ],
+          ).createShader(rect),
+      );
+      final faceRect = rect.deflate(math.max(.8, radius * .1));
+      canvas.drawOval(
+        faceRect,
         Paint()
           ..shader = RadialGradient(
             center: const Alignment(-.38, -.42),
             radius: 1.25,
             colors: [
-              _goldHi.withValues(alpha: opacity),
-              _goldLight.withValues(alpha: opacity),
-              _goldMid.withValues(alpha: opacity),
-              AppColors.amber.withValues(alpha: opacity),
+              palette.hi.withValues(alpha: opacity),
+              palette.light.withValues(alpha: opacity),
+              palette.mid.withValues(alpha: opacity),
+              palette.rim.withValues(alpha: opacity),
             ],
             stops: const [0, .38, .72, 1],
-          ).createShader(rect),
+          ).createShader(faceRect),
       );
       canvas.drawOval(
         Rect.fromCenter(
@@ -1465,8 +1855,19 @@ class _JarPainter extends CustomPainter {
         Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = .8
-          ..color = AppColors.amber.withValues(alpha: .5 * opacity),
+          ..color = palette.rim.withValues(alpha: .5 * opacity),
       );
+      if (radius >= 3.8) {
+        for (var i = 0; i < 10; i++) {
+          final angle = math.pi * 2 * i / 10;
+          canvas.drawCircle(
+            Offset(math.cos(angle) * radius * .59, math.sin(angle) * ry * .59),
+            math.max(.28, radius * .035),
+            Paint()..color = palette.rim.withValues(alpha: .42 * opacity),
+          );
+        }
+        _drawCoinMark(canvas, radius, ry, denomination, opacity, palette.rim);
+      }
       // Specular crescent hugging the upper-left rim.
       canvas.drawArc(
         rect.deflate(radius * .14),
@@ -1504,9 +1905,47 @@ class _JarPainter extends CustomPainter {
       Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1
-        ..color = _goldRim.withValues(alpha: .8 * opacity),
+        ..color = palette.rim.withValues(alpha: .8 * opacity),
     );
     canvas.restore();
+  }
+
+  void _drawCoinMark(
+    Canvas canvas,
+    double radius,
+    double ry,
+    int denomination,
+    double opacity,
+    Color rimColor,
+  ) {
+    final label = '$denomination';
+    void paintLabel(Color color, Offset offset) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: label,
+          style: TextStyle(
+            color: color,
+            fontSize: radius * (denomination == 1 ? .88 : .7),
+            fontWeight: FontWeight.w600,
+            height: 1,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      painter.paint(
+        canvas,
+        Offset(-painter.width / 2, -painter.height / 2) + offset,
+      );
+    }
+
+    paintLabel(
+      Colors.white.withValues(alpha: .5 * opacity),
+      Offset(-radius * .035, -ry * .055),
+    );
+    paintLabel(
+      rimColor.withValues(alpha: .68 * opacity),
+      Offset(radius * .025, ry * .045),
+    );
   }
 
   @override
