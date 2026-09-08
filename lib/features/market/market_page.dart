@@ -28,6 +28,7 @@ class _MarketPageState extends State<MarketPage> {
 
   StreamSubscription<double>? _priceSubscription;
   int _priceStreamGeneration = 0;
+  int _snapshotGeneration = 0;
 
   MarketRange _selectedRange = MarketRange.day;
   int _selectedAsset = 0;
@@ -48,26 +49,58 @@ class _MarketPageState extends State<MarketPage> {
   }
 
   @override
+  void didUpdateWidget(MarketPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      final selectedSymbol = _hasData ? _snapshot.symbol : null;
+      _priceStreamGeneration++;
+      _priceSubscription?.cancel();
+      _loadSnapshots(preferredSymbol: selectedSymbol, clearExisting: true);
+    }
+  }
+
+  @override
   void dispose() {
     _priceSubscription?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadSnapshots() async {
-    setState(() => _error = null);
+  Future<void> _loadSnapshots({
+    String? preferredSymbol,
+    bool clearExisting = false,
+  }) async {
+    final selectedSymbol =
+        preferredSymbol ?? (_hasData ? _snapshot.symbol : null);
+    final generation = ++_snapshotGeneration;
+    setState(() {
+      _error = null;
+      if (clearExisting) {
+        _snapshots.clear();
+        _selectedAsset = 0;
+        _livePrice = null;
+        _hasLivePrice = false;
+        _chartPoints = const [];
+      }
+    });
     try {
       final snapshots = await widget.repository.fetchSnapshots();
-      if (!mounted) return;
+      if (snapshots.isEmpty) throw const FormatException('行情数据为空');
+      if (!mounted || generation != _snapshotGeneration) return;
       setState(() {
         _snapshots
           ..clear()
           ..addAll(snapshots);
-        if (_selectedAsset >= _snapshots.length) _selectedAsset = 0;
+        final preferredIndex = selectedSymbol == null
+            ? -1
+            : _snapshots.indexWhere(
+                (snapshot) => snapshot.symbol == selectedSymbol,
+              );
+        _selectedAsset = preferredIndex >= 0 ? preferredIndex : 0;
         _chartPoints = _snapshot.chartPoints;
       });
       _watchSelectedPrice();
     } on Object catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _snapshotGeneration) return;
       setState(() => _error = error);
       if (_hasData) {
         ScaffoldMessenger.of(
@@ -435,40 +468,52 @@ class _AssetSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        children: List.generate(snapshots.length, (index) {
-          final selected = selectedIndex == index;
-          return Expanded(
-            child: GestureDetector(
-              key: ValueKey('asset-${snapshots[index].symbol}'),
-              onTap: () => onSelected(index),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: selected ? AppColors.tealSoft : Colors.transparent,
-                  borderRadius: BorderRadius.circular(13),
-                ),
-                child: Text(
-                  snapshots[index].symbol,
-                  style: TextStyle(
-                    color: selected ? AppColors.teal : AppColors.muted,
-                    fontSize: 13,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final itemWidth = snapshots.length <= 4
+            ? (constraints.maxWidth - 8) / snapshots.length
+            : 76.0;
+        return Container(
+          height: 44,
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: List.generate(snapshots.length, (index) {
+                final selected = selectedIndex == index;
+                return GestureDetector(
+                  key: ValueKey('asset-${snapshots[index].symbol}'),
+                  onTap: () => onSelected(index),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    width: itemWidth,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: selected ? AppColors.tealSoft : Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      snapshots[index].symbol,
+                      style: TextStyle(
+                        color: selected ? AppColors.teal : AppColors.muted,
+                        fontSize: 13,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w400,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              }),
             ),
-          );
-        }),
-      ),
+          ),
+        );
+      },
     );
   }
 }

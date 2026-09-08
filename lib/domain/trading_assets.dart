@@ -1,5 +1,9 @@
 abstract final class TradingAssets {
-  static const symbols = ['BTC', 'ETH', 'ZEC', 'BNB'];
+  static const defaultSymbols = ['BTC', 'ETH'];
+
+  /// Kept as the default value for existing call sites. The user's actual
+  /// watchlist is loaded from local storage by [AppShell].
+  static const symbols = defaultSymbols;
 
   static const names = {
     'BTC': 'Bitcoin',

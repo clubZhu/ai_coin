@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/ui.dart';
+import '../../data/cross_exchange_repository.dart';
 import '../../data/market_repository.dart';
 import '../../data/position_repository.dart';
+import '../../domain/cross_exchange_analysis.dart';
 import '../../domain/market_snapshot.dart';
 import '../../domain/position_record.dart';
 import '../../domain/trading_assets.dart';
@@ -15,6 +17,7 @@ class AiPage extends StatefulWidget {
   const AiPage({
     super.key,
     required this.repository,
+    required this.crossExchangeRepository,
     required this.positionRepository,
     required this.active,
     required this.onOpenRisk,
@@ -22,6 +25,7 @@ class AiPage extends StatefulWidget {
   });
 
   final MarketRepository repository;
+  final CrossExchangeRepository crossExchangeRepository;
   final PositionRepository positionRepository;
   final bool active;
   final VoidCallback onOpenRisk;
@@ -37,10 +41,13 @@ class _AiPageState extends State<AiPage> {
   final _scrollController = ScrollController();
   final List<String> _questions = [];
   List<MarketSnapshot>? _snapshots;
+  List<CrossExchangeAnalysis> _crossExchangeAnalyses = const [];
   List<PositionRecord> _records = const [];
   Object? _error;
+  Object? _crossExchangeError;
   bool _loading = false;
   bool _loadedOnce = false;
+  int _loadGeneration = 0;
   int _selectedSignalIndex = 0;
   int _engineLeverage = 5;
 
@@ -65,6 +72,15 @@ class _AiPageState extends State<AiPage> {
   @override
   void didUpdateWidget(AiPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.repository != widget.repository) {
+      _loadGeneration++;
+      _loading = false;
+      _loadedOnce = false;
+      _snapshots = null;
+      _crossExchangeAnalyses = const [];
+      if (widget.active) _load(force: true);
+      return;
+    }
     if (widget.active && !oldWidget.active) _load();
   }
 
@@ -76,32 +92,51 @@ class _AiPageState extends State<AiPage> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    if (_loading) return;
+  Future<void> _load({bool force = false}) async {
+    if (_loading && !force) return;
+    final generation = ++_loadGeneration;
+    final repository = widget.repository;
+    final crossExchangeRepository = widget.crossExchangeRepository;
+    final positionRepository = widget.positionRepository;
     setState(() {
       _loading = true;
       _error = null;
+      _crossExchangeError = null;
     });
     var records = _records;
     try {
-      records = await widget.positionRepository.load();
+      records = await positionRepository.load();
     } on Exception {
       records = _records;
     }
     try {
-      final snapshots = await widget.repository.fetchSnapshots();
-      if (!mounted) return;
+      final snapshots = await repository.fetchSnapshots();
+      var analyses = <CrossExchangeAnalysis>[];
+      Object? crossExchangeError;
+      if (snapshots.isNotEmpty) {
+        try {
+          analyses = await crossExchangeRepository.fetchAnalyses(snapshots);
+        } on Object catch (error) {
+          crossExchangeError = error;
+        }
+      }
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _snapshots = snapshots.isEmpty ? null : snapshots;
+        _crossExchangeAnalyses = analyses;
+        _crossExchangeError = crossExchangeError;
         _error = snapshots.isEmpty ? const FormatException('行情数据为空') : null;
         _records = records;
         _loadedOnce = true;
         _loading = false;
-        final signalCount = _opportunitySignals(_snapshots ?? const []).length;
+        final signalCount = _opportunitySignals(
+          _snapshots ?? const [],
+          _crossExchangeAnalyses,
+        ).length;
         if (_selectedSignalIndex >= signalCount) _selectedSignalIndex = 0;
       });
     } on Object catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _records = records;
         _error = error;
@@ -131,11 +166,17 @@ class _AiPageState extends State<AiPage> {
 
   @override
   Widget build(BuildContext context) {
-    final signals = _opportunitySignals(_snapshots ?? const []);
+    final signals = _opportunitySignals(
+      _snapshots ?? const [],
+      _crossExchangeAnalyses,
+    );
     final selectedIndex = signals.isEmpty
         ? 0
         : math.min(_selectedSignalIndex, signals.length - 1);
     final selectedSignal = signals.isEmpty ? null : signals[selectedIndex];
+    final selectedAnalysis =
+        selectedSignal?.crossExchangeAnalysis ??
+        (_crossExchangeAnalyses.isEmpty ? null : _crossExchangeAnalyses.first);
     final behaviorProfile = _BehaviorProfile.fromRecords(_records);
     final snapshot = _snapshot;
     return RefreshIndicator(
@@ -152,6 +193,12 @@ class _AiPageState extends State<AiPage> {
           const SizedBox(height: 14),
           const _WorkflowStrip(),
           const SizedBox(height: 14),
+          _ExchangeConsensusCard(
+            analysis: selectedAnalysis,
+            loading: _loading,
+            error: _crossExchangeError,
+          ),
+          const SizedBox(height: 12),
           _OpportunityRadarCard(
             signals: signals,
             selectedIndex: selectedIndex,
@@ -201,9 +248,21 @@ class _AiPageState extends State<AiPage> {
   }
 }
 
-List<_OpportunitySignal> _opportunitySignals(List<MarketSnapshot> snapshots) {
-  final signals = snapshots.map(_OpportunitySignal.fromSnapshot).toList()
-    ..sort((a, b) => b.score.compareTo(a.score));
+List<_OpportunitySignal> _opportunitySignals(
+  List<MarketSnapshot> snapshots,
+  List<CrossExchangeAnalysis> analyses,
+) {
+  final bySymbol = {for (final analysis in analyses) analysis.symbol: analysis};
+  final signals =
+      snapshots
+          .map(
+            (snapshot) => _OpportunitySignal.fromSnapshot(
+              snapshot,
+              crossExchangeAnalysis: bySymbol[snapshot.symbol],
+            ),
+          )
+          .toList()
+        ..sort((a, b) => b.score.compareTo(a.score));
   return signals;
 }
 
@@ -469,6 +528,363 @@ class _MiniPill extends StatelessWidget {
   }
 }
 
+class _ExchangeConsensusCard extends StatelessWidget {
+  const _ExchangeConsensusCard({
+    required this.analysis,
+    required this.loading,
+    required this.error,
+  });
+
+  final CrossExchangeAnalysis? analysis;
+  final bool loading;
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final data = analysis;
+    return _AiPanel(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeader(
+            title: '跨所胜算',
+            subtitle: data == null
+                ? '聚合主流交易所公开行情'
+                : '${data.symbol} · 历史回测校准，非收益承诺',
+            icon: Icons.hub_outlined,
+            trailing: loading && data == null
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : _MiniPill(
+                    label: data == null
+                        ? '--'
+                        : '有效 ${data.validExchangeCount}/${data.expectedExchangeCount}',
+                    color: data != null && data.validExchangeCount >= 3
+                        ? AppColors.teal
+                        : AppColors.amber,
+                  ),
+          ),
+          const SizedBox(height: 14),
+          if (data == null)
+            _ConsensusEmptyState(loading: loading, error: error)
+          else ...[
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: Row(
+                children: [
+                  for (var index = 0; index < data.quotes.length; index++) ...[
+                    _ExchangeQuoteChip(quote: data.quotes[index]),
+                    if (index != data.quotes.length - 1)
+                      const SizedBox(width: 8),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Expanded(
+                  child: _ConsensusMetric(
+                    label: '跨所一致',
+                    value: '${data.directionAgreement}%',
+                  ),
+                ),
+                Expanded(
+                  child: _ConsensusMetric(
+                    label: '预计胜算',
+                    value: data.hasReliableProbability
+                        ? '${data.winProbability!.toStringAsFixed(0)}%'
+                        : '--',
+                    color: data.hasReliableProbability
+                        ? AppColors.teal
+                        : AppColors.muted,
+                  ),
+                ),
+                Expanded(
+                  child: _ConsensusMetric(
+                    label: '回测样本',
+                    value: data.sampleCount <= 0
+                        ? '--'
+                        : '${data.sampleCount} 笔',
+                    alignment: CrossAxisAlignment.end,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _ConsensusPlanTile(
+                    label: '建议止损',
+                    percent: data.stopLossPercent,
+                    price: data.stopLossPrice,
+                    color: AppColors.red,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _ConsensusPlanTile(
+                    label: '建议止盈',
+                    percent: data.takeProfitPercent,
+                    price: data.takeProfitPrice,
+                    color: AppColors.teal,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Icon(
+                  data.hasReliableProbability
+                      ? Icons.verified_outlined
+                      : Icons.info_outline_rounded,
+                  size: 15,
+                  color: data.hasReliableProbability
+                      ? AppColors.teal
+                      : AppColors.amber,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    data.hasReliableProbability
+                        ? '概率区间 ${data.probabilityLow!.toStringAsFixed(0)}%–${data.probabilityHigh!.toStringAsFixed(0)}% · 数据质量 ${data.dataQualityScore} · 盈亏比 ${data.rewardRiskRatio.toStringAsFixed(1)}:1'
+                        : '${data.unavailableReason ?? '胜算暂不可评估'} · 止盈止损仍按实时波动估算',
+                    style: const TextStyle(
+                      color: AppColors.muted,
+                      fontSize: 11,
+                      height: 1.4,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ConsensusEmptyState extends StatelessWidget {
+  const _ConsensusEmptyState({required this.loading, required this.error});
+
+  final bool loading;
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            error == null ? Icons.sync_rounded : Icons.cloud_off_rounded,
+            size: 19,
+            color: error == null ? AppColors.muted : AppColors.red,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              loading
+                  ? '正在同步 Binance、OKX、Bybit 和 Coinbase…'
+                  : error == null
+                  ? '暂未获得跨所数据'
+                  : '跨所行情加载失败，下拉可重新获取',
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 12,
+                height: 1.4,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ExchangeQuoteChip extends StatelessWidget {
+  const _ExchangeQuoteChip({required this.quote});
+
+  final ExchangeQuote quote;
+
+  @override
+  Widget build(BuildContext context) {
+    final change = quote.changePercent;
+    final color = change == null
+        ? AppColors.muted
+        : change >= 0
+        ? AppColors.teal
+        : AppColors.red;
+    return Container(
+      width: 124,
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: const Color(0xFFF0F1F4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  quote.exchange,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.ink,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+              Text(
+                change == null
+                    ? '--'
+                    : '${change >= 0 ? '+' : ''}${change.toStringAsFixed(1)}%',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '\$${formatPrice(quote.price)}',
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConsensusMetric extends StatelessWidget {
+  const _ConsensusMetric({
+    required this.label,
+    required this.value,
+    this.color = AppColors.ink,
+    this.alignment = CrossAxisAlignment.start,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+  final CrossAxisAlignment alignment;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: alignment,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            color: AppColors.muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w400,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: TextStyle(
+            color: color,
+            fontSize: 17,
+            height: 1.2,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ConsensusPlanTile extends StatelessWidget {
+  const _ConsensusPlanTile({
+    required this.label,
+    required this.percent,
+    required this.price,
+    required this.color,
+  });
+
+  final String label;
+  final double percent;
+  final double price;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(11),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .045),
+        borderRadius: BorderRadius.circular(13),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.muted,
+              fontSize: 11,
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${percent.toStringAsFixed(2)}%',
+            style: TextStyle(
+              color: color,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 3),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '\$${formatPrice(price)}',
+              style: const TextStyle(
+                color: AppColors.muted,
+                fontSize: 11,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _OpportunitySignal {
   const _OpportunitySignal({
     required this.snapshot,
@@ -478,9 +894,13 @@ class _OpportunitySignal {
     required this.stopLossPercent,
     required this.takeProfitPercent,
     required this.alignedTrendCount,
+    required this.crossExchangeAnalysis,
   });
 
-  factory _OpportunitySignal.fromSnapshot(MarketSnapshot snapshot) {
+  factory _OpportunitySignal.fromSnapshot(
+    MarketSnapshot snapshot, {
+    CrossExchangeAnalysis? crossExchangeAnalysis,
+  }) {
     final upCount = snapshot.trends
         .where((trend) => trend.direction == TrendDirection.up)
         .length;
@@ -492,23 +912,32 @@ class _OpportunitySignal {
     final momentum = math.min(snapshot.changePercent.abs() * 4, 18).round();
     final volatilityPenalty = snapshot.riskScore * 6;
     final flatPenalty = alignedTrendCount == 0 ? 12 : 0;
+    final crossExchangeAdjustment = crossExchangeAnalysis == null
+        ? 0
+        : ((crossExchangeAnalysis.directionAgreement - 50) * .12).round() +
+              (crossExchangeAnalysis.validExchangeCount >= 3 ? 3 : -8);
     final score =
         (46 +
                 snapshot.consistency * .32 +
                 alignedTrendCount * 5 +
                 momentum -
                 volatilityPenalty -
-                flatPenalty)
+                flatPenalty +
+                crossExchangeAdjustment)
             .round()
             .clamp(0, 99)
             .toInt();
-    final stopLossPercent = switch (snapshot.riskScore) {
+    final fallbackStopLossPercent = switch (snapshot.riskScore) {
       <= 2 => 1.8,
       3 => 2.4,
       4 => 3.2,
       _ => 4.0,
     };
-    final takeProfitPercent = stopLossPercent * (score >= 70 ? 2.4 : 2.0);
+    final stopLossPercent =
+        crossExchangeAnalysis?.stopLossPercent ?? fallbackStopLossPercent;
+    final takeProfitPercent =
+        crossExchangeAnalysis?.takeProfitPercent ??
+        stopLossPercent * (score >= 70 ? 2.4 : 2.0);
     final gateScore = (score * .7 + (100 - snapshot.riskScore * 14) * .3)
         .round()
         .clamp(0, 100)
@@ -521,6 +950,7 @@ class _OpportunitySignal {
       stopLossPercent: stopLossPercent,
       takeProfitPercent: takeProfitPercent,
       alignedTrendCount: alignedTrendCount,
+      crossExchangeAnalysis: crossExchangeAnalysis,
     );
   }
 
@@ -531,8 +961,10 @@ class _OpportunitySignal {
   final double stopLossPercent;
   final double takeProfitPercent;
   final int alignedTrendCount;
+  final CrossExchangeAnalysis? crossExchangeAnalysis;
 
-  double get entryPrice => snapshot.price;
+  double get entryPrice =>
+      crossExchangeAnalysis?.consensusPrice ?? snapshot.price;
 
   double get stopLossPrice => side == PositionSide.long
       ? entryPrice * (1 - stopLossPercent / 100)
@@ -856,6 +1288,7 @@ class _OpenGateCard extends StatelessWidget {
   final _BehaviorProfile profile;
 
   List<_GateCheck> get _checks {
+    final crossExchange = signal.crossExchangeAnalysis;
     final range = signal.snapshot.high24h - signal.snapshot.low24h;
     final positionInRange = range <= 0
         ? .5
@@ -893,6 +1326,17 @@ class _OpenGateCard extends StatelessWidget {
         label: '位置空间',
         detail: '盈亏比 ${signal.rewardRiskRatio.toStringAsFixed(1)} : 1',
         state: priceState,
+      ),
+      _GateCheck(
+        label: '跨所共识',
+        detail: crossExchange == null
+            ? '数据未到'
+            : '${crossExchange.validExchangeCount}/${crossExchange.expectedExchangeCount} 家 · ${crossExchange.directionAgreement}%',
+        state: crossExchange == null || crossExchange.validExchangeCount < 3
+            ? _GateState.block
+            : crossExchange.directionAgreement >= 67
+            ? _GateState.pass
+            : _GateState.watch,
       ),
       _GateCheck(
         label: '行为冷却',

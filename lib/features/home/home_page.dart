@@ -46,11 +46,13 @@ class HomePage extends StatefulWidget {
     this.symbols = TradingAssets.symbols,
     required this.positionRepository,
     required this.livePriceService,
+    this.onManageSymbols,
   });
 
   final List<String> symbols;
   final PositionRepository positionRepository;
   final LivePriceService livePriceService;
+  final VoidCallback? onManageSymbols;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -123,6 +125,30 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _watchSelectedPrice();
     _loadRecords();
+  }
+
+  @override
+  void didUpdateWidget(HomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final oldIndex = _selectedAsset < oldWidget.symbols.length
+        ? _selectedAsset
+        : 0;
+    final oldSymbol = oldWidget.symbols[oldIndex];
+    final newIndex = widget.symbols.indexOf(oldSymbol);
+    if (newIndex >= 0) {
+      _selectedAsset = newIndex;
+      if (oldWidget.livePriceService != widget.livePriceService) {
+        _watchSelectedPrice();
+      }
+      return;
+    }
+
+    _selectedAsset = 0;
+    _livePrice = null;
+    _hasLivePrice = false;
+    _followMarketPrice = true;
+    _priceController.clear();
+    _watchSelectedPrice();
   }
 
   @override
@@ -362,6 +388,7 @@ class _HomePageState extends State<HomePage> {
                     symbols: widget.symbols,
                     selectedIndex: _selectedAsset,
                     onSelected: _selectAsset,
+                    onManage: widget.onManageSymbols,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1450,14 +1477,34 @@ class _JarPainter extends CustomPainter {
       10: (count % 100) ~/ 10,
       1: count % 10,
     };
-    for (final denomination in const [1000, 100, 10, 1]) {
+    for (final denomination in const [1000, 100, 10]) {
       var remaining = pieces[denomination]!;
       final piecesPerRow = _perRow ~/ _denomUnits[denomination]!;
       while (remaining > 0) {
         final length = math.min(piecesPerRow, remaining);
-        rows.add(List<int>.filled(length, denomination));
+        rows.add(List<int>.filled(length, denomination, growable: true));
         remaining -= length;
       }
+    }
+
+    // Loose 1U coins settle into the visible crevices around larger pieces
+    // before starting their own row. Fill from the top row downward so the
+    // newest small coin still appears near the pile surface during animation.
+    var singles = pieces[1]!;
+    for (
+      var rowIndex = rows.length - 1;
+      rowIndex >= 0 && singles > 0;
+      rowIndex--
+    ) {
+      final gapCapacity = rows[rowIndex].length + 1;
+      final fillCount = math.min(gapCapacity, singles);
+      rows[rowIndex].addAll(List<int>.filled(fillCount, 1));
+      singles -= fillCount;
+    }
+    while (singles > 0) {
+      final length = math.min(_perRow, singles);
+      rows.add(List<int>.filled(length, 1));
+      singles -= length;
     }
     return rows;
   }
@@ -1479,10 +1526,13 @@ class _JarPainter extends CustomPainter {
     var y = inner.bottom;
     var index = 0;
     for (final row in _rowsFor(count)) {
+      final primary = row.where((denomination) => denomination != 1).toList();
+      final fillerCount = row.length - primary.length;
+      final layoutRow = primary.isEmpty ? row : primary;
       var rowUnits = 0;
       var rowHeight = 0.0;
-      for (var column = 0; column < row.length; column++) {
-        final denomination = row[column];
+      for (var column = 0; column < layoutRow.length; column++) {
+        final denomination = layoutRow[column];
         rowUnits += _denomUnits[denomination]!;
         final diameter = unit * _denomDiameter[denomination]!;
         final faceFactor = switch (denomination) {
@@ -1496,7 +1546,8 @@ class _JarPainter extends CustomPainter {
       }
       final rowWidth = rowUnits * unit * 1.02;
       var x = inner.left + (inner.width - rowWidth) / 2;
-      for (final denom in row) {
+      final primarySlots = <_JarCoinSlot>[];
+      for (final denom in layoutRow) {
         final diameter = unit * _denomDiameter[denom]!;
         final span = _denomUnits[denom]! * unit * 1.02;
         final jitterX = ((index * 37) % 5 - 2) * unit * .045;
@@ -1508,17 +1559,69 @@ class _JarPainter extends CustomPainter {
           _ => .82,
         };
         final angle = ((index * 17) % 7 - 3) * .025;
-        coins.add(
-          _JarCoinSlot(
-            denom,
-            Offset(x + span / 2 + jitterX, y - rowHeight * .55 + jitterY),
-            diameter / 2,
-            diameter * faceFactor,
-            angle,
-          ),
+        final slot = _JarCoinSlot(
+          denom,
+          Offset(x + span / 2 + jitterX, y - rowHeight * .55 + jitterY),
+          diameter / 2,
+          diameter * faceFactor,
+          angle,
         );
+        coins.add(slot);
+        primarySlots.add(slot);
         x += span;
         index++;
+      }
+
+      if (primary.isNotEmpty && fillerCount > 0) {
+        final smallRadius = unit * _denomDiameter[1]! / 2;
+        final anchors = <double>[];
+        // The middle crevices are the most obvious empty areas, so occupy them
+        // before the softer gaps at the left and right edges.
+        for (
+          var slotIndex = 0;
+          slotIndex < primarySlots.length - 1;
+          slotIndex++
+        ) {
+          anchors.add(
+            (primarySlots[slotIndex].center.dx +
+                    primarySlots[slotIndex + 1].center.dx) /
+                2,
+          );
+        }
+        anchors
+          ..add(
+            (primarySlots.first.center.dx -
+                    primarySlots.first.radius -
+                    smallRadius * .72)
+                .clamp(inner.left + smallRadius, inner.right - smallRadius)
+                .toDouble(),
+          )
+          ..add(
+            (primarySlots.last.center.dx +
+                    primarySlots.last.radius +
+                    smallRadius * .72)
+                .clamp(inner.left + smallRadius, inner.right - smallRadius)
+                .toDouble(),
+          );
+        for (var filler = 0; filler < fillerCount; filler++) {
+          final diameter = unit * _denomDiameter[1]!;
+          final faceFactor = index % 3 == 0 ? .7 : .54;
+          final jitterX = ((index * 31) % 3 - 1) * unit * .035;
+          final jitterY = ((index * 23) % 3 - 1) * unit * .02;
+          coins.add(
+            _JarCoinSlot(
+              1,
+              Offset(
+                anchors[filler % anchors.length] + jitterX,
+                y - rowHeight * .55 - diameter * .08 + jitterY,
+              ),
+              diameter / 2,
+              diameter * faceFactor,
+              ((index * 19) % 7 - 3) * .035,
+            ),
+          );
+          index++;
+        }
       }
       y -= rowHeight * .78;
     }
@@ -2021,28 +2124,58 @@ class _CoinSelector extends StatelessWidget {
     required this.symbols,
     required this.selectedIndex,
     required this.onSelected,
+    this.onManage,
   });
 
   final List<String> symbols;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
+  final VoidCallback? onManage;
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<int>(
       key: const ValueKey('coin-selector'),
       initialValue: selectedIndex,
-      onSelected: onSelected,
+      onSelected: (value) {
+        if (value == -1) {
+          onManage?.call();
+        } else {
+          onSelected(value);
+        }
+      },
       color: AppColors.surface,
       position: PopupMenuPosition.under,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      itemBuilder: (context) => List.generate(
-        symbols.length,
-        (index) => PopupMenuItem<int>(
-          value: index,
-          child: Text('${symbols[index]}/USDT'),
-        ),
-      ),
+      itemBuilder: (context) => <PopupMenuEntry<int>>[
+        for (var index = 0; index < symbols.length; index++)
+          PopupMenuItem<int>(
+            value: index,
+            child: Text(
+              '${symbols[index]} / USDT',
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+            ),
+          ),
+        if (onManage != null) const PopupMenuDivider(height: 1),
+        if (onManage != null)
+          const PopupMenuItem<int>(
+            value: -1,
+            child: Row(
+              children: [
+                Icon(Icons.tune_rounded, size: 18, color: AppColors.muted),
+                SizedBox(width: 10),
+                Text(
+                  '管理币种',
+                  style: TextStyle(
+                    color: AppColors.ink,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
       child: Container(
         height: 36,
         padding: const EdgeInsets.only(left: 10, right: 6),

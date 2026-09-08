@@ -1,11 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../core/app_theme.dart';
+import '../data/binance_asset_catalog.dart';
+import '../data/binance_coin_recommendation_repository.dart';
 import '../data/binance_market_repository.dart';
+import '../data/coin_recommendation_repository.dart';
+import '../data/cross_exchange_repository.dart';
 import '../data/live_price_service.dart';
 import '../data/market_repository.dart';
 import '../data/position_repository.dart';
+import '../data/public_cross_exchange_repository.dart';
+import '../data/trading_asset_repository.dart';
+import '../domain/trading_assets.dart';
 import 'ai/ai_page.dart';
+import 'assets/asset_manager_page.dart';
 import 'home/home_page.dart';
 import 'journal/review_page.dart';
 import 'market/market_page.dart';
@@ -18,24 +26,107 @@ class AppShell extends StatefulWidget {
     this.positionRepository,
     this.livePriceService,
     this.marketRepository,
+    this.crossExchangeRepository,
+    this.tradingAssetRepository,
+    this.tradingAssetCatalog,
+    this.coinRecommendationRepository,
   });
 
   final PositionRepository? positionRepository;
   final LivePriceService? livePriceService;
   final MarketRepository? marketRepository;
+  final CrossExchangeRepository? crossExchangeRepository;
+  final TradingAssetRepository? tradingAssetRepository;
+  final TradingAssetCatalog? tradingAssetCatalog;
+  final CoinRecommendationRepository? coinRecommendationRepository;
 
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
 class _AppShellState extends State<AppShell> {
-  late final MarketRepository _marketRepository =
-      widget.marketRepository ?? BinanceMarketRepository();
+  late MarketRepository _marketRepository;
   late final PositionRepository _positionRepository =
       widget.positionRepository ?? LocalPositionRepository();
   late final LivePriceService _livePriceService =
       widget.livePriceService ?? const BinanceLivePriceService();
+  late final CrossExchangeRepository _crossExchangeRepository =
+      widget.crossExchangeRepository ??
+      (widget.marketRepository == null
+          ? PublicCrossExchangeRepository()
+          : const EmptyCrossExchangeRepository());
+  late final TradingAssetRepository _tradingAssetRepository =
+      widget.tradingAssetRepository ?? LocalTradingAssetRepository();
+  late final TradingAssetCatalog _tradingAssetCatalog =
+      widget.tradingAssetCatalog ?? BinanceAssetCatalog();
+  late final CoinRecommendationRepository _coinRecommendationRepository =
+      widget.coinRecommendationRepository ??
+      BinanceCoinRecommendationRepository();
+  List<String> _symbols = List<String>.of(TradingAssets.defaultSymbols);
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _marketRepository =
+        widget.marketRepository ??
+        BinanceMarketRepository(symbols: List<String>.unmodifiable(_symbols));
+    _loadTradingAssets();
+  }
+
+  Future<void> _loadTradingAssets() async {
+    try {
+      final symbols = await _tradingAssetRepository.load();
+      if (!mounted || _sameSymbols(_symbols, symbols)) return;
+      setState(() {
+        _symbols = List<String>.of(symbols);
+        if (widget.marketRepository == null) {
+          _marketRepository = BinanceMarketRepository(
+            symbols: List<String>.unmodifiable(_symbols),
+          );
+        }
+      });
+    } on Exception {
+      // Defaults remain available when local preferences cannot be read.
+    }
+  }
+
+  Future<void> _openAssetManager() async {
+    final symbols = await Navigator.of(context).push<List<String>>(
+      MaterialPageRoute<List<String>>(
+        builder: (_) => AssetManagerPage(
+          symbols: _symbols,
+          catalog: _tradingAssetCatalog,
+          recommendationRepository: _coinRecommendationRepository,
+        ),
+      ),
+    );
+    if (!mounted || symbols == null || _sameSymbols(_symbols, symbols)) return;
+    setState(() {
+      _symbols = List<String>.of(symbols);
+      if (widget.marketRepository == null) {
+        _marketRepository = BinanceMarketRepository(
+          symbols: List<String>.unmodifiable(_symbols),
+        );
+      }
+    });
+    try {
+      await _tradingAssetRepository.save(_symbols);
+    } on Exception {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('币种顺序保存失败，请稍后重试')));
+    }
+  }
+
+  bool _sameSymbols(List<String> first, List<String> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
 
   void _openRisk() {
     Navigator.of(
@@ -53,8 +144,10 @@ class _AppShellState extends State<AppShell> {
   Widget build(BuildContext context) {
     final pages = [
       HomePage(
+        symbols: _symbols,
         positionRepository: _positionRepository,
         livePriceService: _livePriceService,
+        onManageSymbols: _openAssetManager,
       ),
       MarketPage(
         repository: _marketRepository,
@@ -62,6 +155,7 @@ class _AppShellState extends State<AppShell> {
       ),
       AiPage(
         repository: _marketRepository,
+        crossExchangeRepository: _crossExchangeRepository,
         positionRepository: _positionRepository,
         active: _index == 2,
         onOpenRisk: _openRisk,
