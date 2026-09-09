@@ -47,12 +47,14 @@ class HomePage extends StatefulWidget {
     required this.positionRepository,
     required this.livePriceService,
     this.onManageSymbols,
+    this.pricePrecisions = const {},
   });
 
   final List<String> symbols;
   final PositionRepository positionRepository;
   final LivePriceService livePriceService;
   final VoidCallback? onManageSymbols;
+  final Map<String, int> pricePrecisions;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -77,6 +79,7 @@ class _HomePageState extends State<HomePage> {
   double? _livePrice;
 
   String get _symbol => widget.symbols[_selectedAsset];
+  int? get _pricePrecision => widget.pricePrecisions[_symbol];
   double? get _entryPrice =>
       double.tryParse(_priceController.text.replaceAll(',', '').trim());
   double? get _amount =>
@@ -137,6 +140,11 @@ class _HomePageState extends State<HomePage> {
     final newIndex = widget.symbols.indexOf(oldSymbol);
     if (newIndex >= 0) {
       _selectedAsset = newIndex;
+      if (oldWidget.pricePrecisions[oldSymbol] != _pricePrecision &&
+          _livePrice != null &&
+          _followMarketPrice) {
+        _setPriceText(_livePrice!);
+      }
       if (oldWidget.livePriceService != widget.livePriceService) {
         _watchSelectedPrice();
       }
@@ -195,7 +203,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _setPriceText(double price) {
-    final text = formatPrice(price);
+    final text = formatPrice(price, decimals: _pricePrecision);
     if (_priceController.text == text) return;
     _priceController.text = text;
   }
@@ -267,6 +275,7 @@ class _HomePageState extends State<HomePage> {
           createdAt: DateTime.now(),
           positionAmount: amount,
           leverage: _leverage,
+          pricePrecision: _pricePrecision,
         ),
       );
     });
@@ -407,7 +416,7 @@ class _HomePageState extends State<HomePage> {
                         label: Text(
                           _livePrice == null
                               ? '市价 --'
-                              : '${_hasLivePrice ? '实时' : '市价'} ${formatPrice(_livePrice!)}',
+                              : '${_hasLivePrice ? '实时' : '市价'} ${formatPrice(_livePrice!, decimals: _pricePrecision)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -542,6 +551,7 @@ class _HomePageState extends State<HomePage> {
                       : _stopLossPercent,
                   price: _stopLossPrice,
                   amount: -_estimatedLoss,
+                  pricePrecision: _pricePrecision,
                   color: AppColors.red,
                   softColor: AppColors.redSoft,
                   onDecrease: () => setState(() {
@@ -563,6 +573,7 @@ class _HomePageState extends State<HomePage> {
                       : -_takeProfitPercent,
                   price: _takeProfitPrice,
                   amount: _estimatedProfit,
+                  pricePrecision: _pricePrecision,
                   color: AppColors.teal,
                   softColor: AppColors.tealSoft,
                   onDecrease: () => setState(() {
@@ -2354,6 +2365,7 @@ class _TargetCard extends StatelessWidget {
     required this.distancePercent,
     required this.price,
     required this.amount,
+    required this.pricePrecision,
     required this.color,
     required this.softColor,
     required this.onDecrease,
@@ -2365,6 +2377,7 @@ class _TargetCard extends StatelessWidget {
   final double distancePercent;
   final double? price;
   final double amount;
+  final int? pricePrecision;
   final Color color;
   final Color softColor;
   final VoidCallback onDecrease;
@@ -2455,7 +2468,9 @@ class _TargetCard extends StatelessWidget {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Text(
-              price == null ? '价格 --' : '价格 ${formatPrice(price!)} USDT',
+              price == null
+                  ? '价格 --'
+                  : '价格 ${formatPrice(price!, decimals: pricePrecision)} USDT',
               key: ValueKey(price),
               maxLines: 1,
               style: const TextStyle(

@@ -33,6 +33,7 @@ class CrossExchangeAnalysis {
     required this.stopLossPercent,
     required this.takeProfitPercent,
     required this.unavailableReason,
+    this.pricePrecision = 2,
   });
 
   final String symbol;
@@ -50,6 +51,7 @@ class CrossExchangeAnalysis {
   final double stopLossPercent;
   final double takeProfitPercent;
   final String? unavailableReason;
+  final int pricePrecision;
 
   int get validExchangeCount => quotes.length;
 

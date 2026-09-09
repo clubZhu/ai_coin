@@ -8,8 +8,10 @@ import '../data/coin_recommendation_repository.dart';
 import '../data/cross_exchange_repository.dart';
 import '../data/live_price_service.dart';
 import '../data/market_repository.dart';
+import '../data/policy_impact_repository.dart';
 import '../data/position_repository.dart';
 import '../data/public_cross_exchange_repository.dart';
+import '../data/public_policy_impact_repository.dart';
 import '../data/trading_asset_repository.dart';
 import '../domain/trading_assets.dart';
 import 'ai/ai_page.dart';
@@ -27,6 +29,7 @@ class AppShell extends StatefulWidget {
     this.livePriceService,
     this.marketRepository,
     this.crossExchangeRepository,
+    this.policyImpactRepository,
     this.tradingAssetRepository,
     this.tradingAssetCatalog,
     this.coinRecommendationRepository,
@@ -36,6 +39,7 @@ class AppShell extends StatefulWidget {
   final LivePriceService? livePriceService;
   final MarketRepository? marketRepository;
   final CrossExchangeRepository? crossExchangeRepository;
+  final PolicyImpactRepository? policyImpactRepository;
   final TradingAssetRepository? tradingAssetRepository;
   final TradingAssetCatalog? tradingAssetCatalog;
   final CoinRecommendationRepository? coinRecommendationRepository;
@@ -55,6 +59,11 @@ class _AppShellState extends State<AppShell> {
       (widget.marketRepository == null
           ? PublicCrossExchangeRepository()
           : const EmptyCrossExchangeRepository());
+  late final PolicyImpactRepository _policyImpactRepository =
+      widget.policyImpactRepository ??
+      (widget.marketRepository == null
+          ? PublicPolicyImpactRepository()
+          : const EmptyPolicyImpactRepository());
   late final TradingAssetRepository _tradingAssetRepository =
       widget.tradingAssetRepository ?? LocalTradingAssetRepository();
   late final TradingAssetCatalog _tradingAssetCatalog =
@@ -63,31 +72,63 @@ class _AppShellState extends State<AppShell> {
       widget.coinRecommendationRepository ??
       BinanceCoinRecommendationRepository();
   List<String> _symbols = List<String>.of(TradingAssets.defaultSymbols);
+  Map<String, int> _pricePrecisions = const {};
+  int _precisionGeneration = 0;
   int _index = 0;
 
   @override
   void initState() {
     super.initState();
-    _marketRepository =
-        widget.marketRepository ??
-        BinanceMarketRepository(symbols: List<String>.unmodifiable(_symbols));
+    _marketRepository = widget.marketRepository ?? _createMarketRepository();
     _loadTradingAssets();
   }
+
+  MarketRepository _createMarketRepository() => BinanceMarketRepository(
+    symbols: List<String>.unmodifiable(_symbols),
+    pricePrecisions: Map<String, int>.unmodifiable(_pricePrecisions),
+  );
 
   Future<void> _loadTradingAssets() async {
     try {
       final symbols = await _tradingAssetRepository.load();
-      if (!mounted || _sameSymbols(_symbols, symbols)) return;
+      if (!mounted) return;
+      if (!_sameSymbols(_symbols, symbols)) {
+        setState(() {
+          _symbols = List<String>.of(symbols);
+          if (widget.marketRepository == null) {
+            _marketRepository = _createMarketRepository();
+          }
+        });
+      }
+    } on Exception {
+      // Defaults remain available when local preferences cannot be read.
+    }
+    if (widget.marketRepository == null) {
+      await _loadPricePrecisions(_symbols);
+    }
+  }
+
+  Future<void> _loadPricePrecisions(List<String> symbols) async {
+    final generation = ++_precisionGeneration;
+    final requested = List<String>.of(symbols);
+    try {
+      final precisions = await _tradingAssetCatalog.fetchPricePrecisions(
+        requested,
+      );
+      if (!mounted ||
+          generation != _precisionGeneration ||
+          !_sameSymbols(_symbols, requested) ||
+          _samePrecisions(_pricePrecisions, precisions)) {
+        return;
+      }
       setState(() {
-        _symbols = List<String>.of(symbols);
+        _pricePrecisions = Map<String, int>.of(precisions);
         if (widget.marketRepository == null) {
-          _marketRepository = BinanceMarketRepository(
-            symbols: List<String>.unmodifiable(_symbols),
-          );
+          _marketRepository = _createMarketRepository();
         }
       });
     } on Exception {
-      // Defaults remain available when local preferences cannot be read.
+      // Every price formatter keeps a magnitude-based fallback.
     }
   }
 
@@ -105,9 +146,7 @@ class _AppShellState extends State<AppShell> {
     setState(() {
       _symbols = List<String>.of(symbols);
       if (widget.marketRepository == null) {
-        _marketRepository = BinanceMarketRepository(
-          symbols: List<String>.unmodifiable(_symbols),
-        );
+        _marketRepository = _createMarketRepository();
       }
     });
     try {
@@ -118,12 +157,23 @@ class _AppShellState extends State<AppShell> {
         context,
       ).showSnackBar(const SnackBar(content: Text('币种顺序保存失败，请稍后重试')));
     }
+    if (widget.marketRepository == null) {
+      await _loadPricePrecisions(_symbols);
+    }
   }
 
   bool _sameSymbols(List<String> first, List<String> second) {
     if (first.length != second.length) return false;
     for (var index = 0; index < first.length; index++) {
       if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
+  bool _samePrecisions(Map<String, int> first, Map<String, int> second) {
+    if (first.length != second.length) return false;
+    for (final entry in first.entries) {
+      if (second[entry.key] != entry.value) return false;
     }
     return true;
   }
@@ -145,6 +195,7 @@ class _AppShellState extends State<AppShell> {
     final pages = [
       HomePage(
         symbols: _symbols,
+        pricePrecisions: _pricePrecisions,
         positionRepository: _positionRepository,
         livePriceService: _livePriceService,
         onManageSymbols: _openAssetManager,
@@ -156,6 +207,7 @@ class _AppShellState extends State<AppShell> {
       AiPage(
         repository: _marketRepository,
         crossExchangeRepository: _crossExchangeRepository,
+        policyImpactRepository: _policyImpactRepository,
         positionRepository: _positionRepository,
         active: _index == 2,
         onOpenRisk: _openRisk,

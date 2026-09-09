@@ -7,8 +7,10 @@ import '../../core/app_theme.dart';
 import '../../core/ui.dart';
 import '../../data/cross_exchange_repository.dart';
 import '../../data/market_repository.dart';
+import '../../data/policy_impact_repository.dart';
 import '../../data/position_repository.dart';
 import '../../domain/cross_exchange_analysis.dart';
+import '../../domain/market_context.dart';
 import '../../domain/market_snapshot.dart';
 import '../../domain/position_record.dart';
 import '../../domain/trading_assets.dart';
@@ -18,6 +20,7 @@ class AiPage extends StatefulWidget {
     super.key,
     required this.repository,
     required this.crossExchangeRepository,
+    required this.policyImpactRepository,
     required this.positionRepository,
     required this.active,
     required this.onOpenRisk,
@@ -26,6 +29,7 @@ class AiPage extends StatefulWidget {
 
   final MarketRepository repository;
   final CrossExchangeRepository crossExchangeRepository;
+  final PolicyImpactRepository policyImpactRepository;
   final PositionRepository positionRepository;
   final bool active;
   final VoidCallback onOpenRisk;
@@ -42,9 +46,11 @@ class _AiPageState extends State<AiPage> {
   final List<String> _questions = [];
   List<MarketSnapshot>? _snapshots;
   List<CrossExchangeAnalysis> _crossExchangeAnalyses = const [];
+  PolicyImpact? _policyImpact;
   List<PositionRecord> _records = const [];
   Object? _error;
   Object? _crossExchangeError;
+  Object? _policyError;
   bool _loading = false;
   bool _loadedOnce = false;
   int _loadGeneration = 0;
@@ -78,6 +84,7 @@ class _AiPageState extends State<AiPage> {
       _loadedOnce = false;
       _snapshots = null;
       _crossExchangeAnalyses = const [];
+      _policyImpact = null;
       if (widget.active) _load(force: true);
       return;
     }
@@ -97,11 +104,14 @@ class _AiPageState extends State<AiPage> {
     final generation = ++_loadGeneration;
     final repository = widget.repository;
     final crossExchangeRepository = widget.crossExchangeRepository;
+    final policyImpactRepository = widget.policyImpactRepository;
     final positionRepository = widget.positionRepository;
+    final policyFuture = _fetchPolicyImpact(policyImpactRepository);
     setState(() {
       _loading = true;
       _error = null;
       _crossExchangeError = null;
+      _policyError = null;
     });
     var records = _records;
     try {
@@ -120,11 +130,14 @@ class _AiPageState extends State<AiPage> {
           crossExchangeError = error;
         }
       }
+      final policyResult = await policyFuture;
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _snapshots = snapshots.isEmpty ? null : snapshots;
         _crossExchangeAnalyses = analyses;
         _crossExchangeError = crossExchangeError;
+        _policyImpact = policyResult.impact;
+        _policyError = policyResult.error;
         _error = snapshots.isEmpty ? const FormatException('行情数据为空') : null;
         _records = records;
         _loadedOnce = true;
@@ -132,6 +145,7 @@ class _AiPageState extends State<AiPage> {
         final signalCount = _opportunitySignals(
           _snapshots ?? const [],
           _crossExchangeAnalyses,
+          _policyImpact,
         ).length;
         if (_selectedSignalIndex >= signalCount) _selectedSignalIndex = 0;
       });
@@ -169,6 +183,7 @@ class _AiPageState extends State<AiPage> {
     final signals = _opportunitySignals(
       _snapshots ?? const [],
       _crossExchangeAnalyses,
+      _policyImpact,
     );
     final selectedIndex = signals.isEmpty
         ? 0
@@ -204,6 +219,7 @@ class _AiPageState extends State<AiPage> {
             selectedIndex: selectedIndex,
             loading: _loading,
             error: _error,
+            policyError: _policyError,
             onRetry: _load,
             onSelected: (index) => setState(() => _selectedSignalIndex = index),
           ),
@@ -251,6 +267,7 @@ class _AiPageState extends State<AiPage> {
 List<_OpportunitySignal> _opportunitySignals(
   List<MarketSnapshot> snapshots,
   List<CrossExchangeAnalysis> analyses,
+  PolicyImpact? policyImpact,
 ) {
   final bySymbol = {for (final analysis in analyses) analysis.symbol: analysis};
   final signals =
@@ -259,11 +276,22 @@ List<_OpportunitySignal> _opportunitySignals(
             (snapshot) => _OpportunitySignal.fromSnapshot(
               snapshot,
               crossExchangeAnalysis: bySymbol[snapshot.symbol],
+              policyImpact: policyImpact,
             ),
           )
           .toList()
         ..sort((a, b) => b.score.compareTo(a.score));
   return signals;
+}
+
+Future<({PolicyImpact? impact, Object? error})> _fetchPolicyImpact(
+  PolicyImpactRepository repository,
+) async {
+  try {
+    return (impact: await repository.fetchImpact(), error: null);
+  } on Object catch (error) {
+    return (impact: null, error: error);
+  }
 }
 
 class _AiHeader extends StatelessWidget {
@@ -577,7 +605,10 @@ class _ExchangeConsensusCard extends StatelessWidget {
               child: Row(
                 children: [
                   for (var index = 0; index < data.quotes.length; index++) ...[
-                    _ExchangeQuoteChip(quote: data.quotes[index]),
+                    _ExchangeQuoteChip(
+                      quote: data.quotes[index],
+                      pricePrecision: data.pricePrecision,
+                    ),
                     if (index != data.quotes.length - 1)
                       const SizedBox(width: 8),
                   ],
@@ -623,6 +654,7 @@ class _ExchangeConsensusCard extends StatelessWidget {
                     label: '建议止损',
                     percent: data.stopLossPercent,
                     price: data.stopLossPrice,
+                    pricePrecision: data.pricePrecision,
                     color: AppColors.red,
                   ),
                 ),
@@ -632,6 +664,7 @@ class _ExchangeConsensusCard extends StatelessWidget {
                     label: '建议止盈',
                     percent: data.takeProfitPercent,
                     price: data.takeProfitPrice,
+                    pricePrecision: data.pricePrecision,
                     color: AppColors.teal,
                   ),
                 ),
@@ -716,9 +749,10 @@ class _ConsensusEmptyState extends StatelessWidget {
 }
 
 class _ExchangeQuoteChip extends StatelessWidget {
-  const _ExchangeQuoteChip({required this.quote});
+  const _ExchangeQuoteChip({required this.quote, required this.pricePrecision});
 
   final ExchangeQuote quote;
+  final int pricePrecision;
 
   @override
   Widget build(BuildContext context) {
@@ -770,7 +804,7 @@ class _ExchangeQuoteChip extends StatelessWidget {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Text(
-              '\$${formatPrice(quote.price)}',
+              '\$${formatPrice(quote.price, decimals: pricePrecision)}',
               style: const TextStyle(
                 color: AppColors.ink,
                 fontSize: 14,
@@ -830,12 +864,14 @@ class _ConsensusPlanTile extends StatelessWidget {
     required this.label,
     required this.percent,
     required this.price,
+    required this.pricePrecision,
     required this.color,
   });
 
   final String label;
   final double percent;
   final double price;
+  final int pricePrecision;
   final Color color;
 
   @override
@@ -871,7 +907,7 @@ class _ConsensusPlanTile extends StatelessWidget {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Text(
-              '\$${formatPrice(price)}',
+              '\$${formatPrice(price, decimals: pricePrecision)}',
               style: const TextStyle(
                 color: AppColors.muted,
                 fontSize: 11,
@@ -890,78 +926,377 @@ class _OpportunitySignal {
     required this.snapshot,
     required this.side,
     required this.score,
+    required this.confidence,
     required this.gateScore,
     required this.stopLossPercent,
     required this.takeProfitPercent,
     required this.alignedTrendCount,
+    required this.strengths,
+    required this.warnings,
     required this.crossExchangeAnalysis,
+    required this.policyImpact,
   });
 
   factory _OpportunitySignal.fromSnapshot(
     MarketSnapshot snapshot, {
     CrossExchangeAnalysis? crossExchangeAnalysis,
+    PolicyImpact? policyImpact,
   }) {
-    final upCount = snapshot.trends
-        .where((trend) => trend.direction == TrendDirection.up)
-        .length;
-    final downCount = snapshot.trends
-        .where((trend) => trend.direction == TrendDirection.down)
-        .length;
-    final side = downCount > upCount ? PositionSide.short : PositionSide.long;
-    final alignedTrendCount = math.max(upCount, downCount);
-    final momentum = math.min(snapshot.changePercent.abs() * 4, 18).round();
-    final volatilityPenalty = snapshot.riskScore * 6;
-    final flatPenalty = alignedTrendCount == 0 ? 12 : 0;
-    final crossExchangeAdjustment = crossExchangeAnalysis == null
+    const timeframeWeights = [1.0, 2.0, 3.0, 2.0];
+    var directionalBias = 0.0;
+    var totalWeight = 0.0;
+    for (var index = 0; index < snapshot.trends.length; index++) {
+      final weight = index < timeframeWeights.length
+          ? timeframeWeights[index]
+          : 1.0;
+      totalWeight += weight;
+      directionalBias += switch (snapshot.trends[index].direction) {
+        TrendDirection.up => weight,
+        TrendDirection.down => -weight,
+        TrendDirection.flat => 0,
+      };
+    }
+    final side =
+        directionalBias < 0 ||
+            (directionalBias == 0 && snapshot.changePercent < 0)
+        ? PositionSide.short
+        : PositionSide.long;
+    final targetDirection = side == PositionSide.long
+        ? TrendDirection.up
+        : TrendDirection.down;
+    var alignedWeight = 0.0;
+    var alignedTrendCount = 0;
+    for (var index = 0; index < snapshot.trends.length; index++) {
+      if (snapshot.trends[index].direction != targetDirection) continue;
+      alignedTrendCount++;
+      alignedWeight += index < timeframeWeights.length
+          ? timeframeWeights[index]
+          : 1.0;
+    }
+
+    final trendScore = totalWeight == 0
         ? 0
-        : ((crossExchangeAnalysis.directionAgreement - 50) * .12).round() +
-              (crossExchangeAnalysis.validExchangeCount >= 3 ? 3 : -8);
+        : ((alignedWeight / totalWeight) * 22 + snapshot.consistency * .08)
+              .round()
+              .clamp(0, 30)
+              .toInt();
+    final momentumScore = _momentumScore(
+      rsi: snapshot.rsi14,
+      changePercent: snapshot.changePercent,
+      side: side,
+    );
+    final volumeScore = _volumeScore(snapshot.volumeRatio);
+    final position = _positionInRange(snapshot);
+    final positionScore = _positionScore(position, side);
+    final volatilityScore = _volatilityScore(snapshot.atrPercent);
+    final crossScore = _crossExchangeScore(crossExchangeAnalysis);
+    final largeTradeAdjustment = _largeTradeAdjustment(
+      snapshot.largeTradeFlow,
+      side,
+    );
+    final policyAdjustment = _policyAdjustment(policyImpact, side);
+
+    final strengths = <String>[];
+    final warnings = <String>[];
+    if (totalWeight > 0 && alignedWeight / totalWeight >= .62) {
+      strengths.add('多周期趋势共振');
+    }
+    if (_isHealthyRsi(snapshot.rsi14, side)) strengths.add('RSI 动量健康');
+    if (snapshot.volumeRatio != null && snapshot.volumeRatio! >= 1.05) {
+      strengths.add('成交量确认');
+    }
+    if (snapshot.atrPercent != null &&
+        snapshot.atrPercent! >= .15 &&
+        snapshot.atrPercent! <= 2.5) {
+      strengths.add('波动结构可控');
+    }
+    if (_hasPositionRoom(position, side)) strengths.add('价格位置有空间');
+    if (crossExchangeAnalysis != null &&
+        crossExchangeAnalysis.validExchangeCount >= 3 &&
+        crossExchangeAnalysis.directionAgreement >= 67) {
+      strengths.add('跨所方向一致');
+    }
+    final largeTradeFlow = snapshot.largeTradeFlow;
+    final alignedLargeFlow = largeTradeFlow == null
+        ? null
+        : side == PositionSide.long
+        ? largeTradeFlow.netFlowPercent
+        : -largeTradeFlow.netFlowPercent;
+    if (largeTradeFlow != null &&
+        largeTradeFlow.confidence >= 55 &&
+        alignedLargeFlow! >= 15) {
+      strengths.insert(0, '大额成交方向同向');
+    }
+    final alignedPolicy = policyImpact == null
+        ? null
+        : side == PositionSide.long
+        ? policyImpact.directionScore
+        : -policyImpact.directionScore;
+    if (policyImpact != null &&
+        policyImpact.isAvailable &&
+        policyImpact.confidence >= 55 &&
+        alignedPolicy! >= 20) {
+      strengths.insert(0, '政策方向同向');
+    }
+
+    var penalty = 0;
+    final rsi = snapshot.rsi14;
+    if (rsi != null &&
+        ((side == PositionSide.long && rsi >= 72) ||
+            (side == PositionSide.short && rsi <= 28))) {
+      warnings.add(side == PositionSide.long ? 'RSI 偏热，避免追高' : 'RSI 偏冷，避免追空');
+      penalty += 10;
+    }
+    final volumeRatio = snapshot.volumeRatio;
+    if (volumeRatio != null && volumeRatio < .65) {
+      warnings.add('近期缩量，信号确认不足');
+      penalty += 7;
+    }
+    if ((side == PositionSide.long && position >= .86) ||
+        (side == PositionSide.short && position <= .14)) {
+      warnings.add('价格接近区间极值');
+      penalty += 7;
+    }
+    final atrPercent = snapshot.atrPercent;
+    if (atrPercent != null && atrPercent > 4) {
+      warnings.add('短线波动过大');
+      penalty += 6;
+    }
+    if (crossExchangeAnalysis != null &&
+        crossExchangeAnalysis.validExchangeCount >= 3 &&
+        crossExchangeAnalysis.directionAgreement < 50) {
+      warnings.add('跨所方向存在分歧');
+      penalty += 9;
+    }
+    if (largeTradeFlow != null &&
+        largeTradeFlow.confidence >= 55 &&
+        alignedLargeFlow! <= -18) {
+      warnings.insert(0, '大额成交资金逆向');
+      penalty += 4;
+    }
+    if (policyImpact != null && policyImpact.isAvailable) {
+      if (policyImpact.confidence >= 55 && alignedPolicy! <= -20) {
+        warnings.insert(0, '近期政策方向逆向');
+        penalty += 4;
+      }
+      if (policyImpact.eventRiskScore >= 65) {
+        warnings.insert(0, '处于高影响政策窗口');
+        penalty += 6;
+      } else if (policyImpact.eventRiskScore >= 35) {
+        warnings.add('近期政策事件需关注');
+        penalty += 2;
+      }
+    }
+    if (alignedTrendCount < 2) {
+      warnings.add('趋势共振不足');
+      penalty += 5;
+    }
+    if (snapshot.changePercent.abs() > 15) {
+      warnings.add('24h 涨跌幅过大');
+      penalty += 5;
+    }
+    if (strengths.isEmpty) strengths.add('信号仍在形成');
+
     final score =
-        (46 +
-                snapshot.consistency * .32 +
-                alignedTrendCount * 5 +
-                momentum -
-                volatilityPenalty -
-                flatPenalty +
-                crossExchangeAdjustment)
-            .round()
+        (trendScore +
+                momentumScore +
+                volumeScore +
+                positionScore +
+                volatilityScore +
+                crossScore +
+                largeTradeAdjustment +
+                policyAdjustment -
+                penalty)
             .clamp(0, 99)
             .toInt();
-    final fallbackStopLossPercent = switch (snapshot.riskScore) {
-      <= 2 => 1.8,
-      3 => 2.4,
-      4 => 3.2,
-      _ => 4.0,
-    };
+    final confidence =
+        (25 +
+                (snapshot.rsi14 == null ? 0 : 10) +
+                (snapshot.volumeRatio == null ? 0 : 10) +
+                (snapshot.atrPercent == null ? 0 : 10) +
+                (crossExchangeAnalysis == null
+                    ? 0
+                    : crossExchangeAnalysis.validExchangeCount >= 3
+                    ? 15
+                    : 5) +
+                (largeTradeFlow == null
+                    ? 0
+                    : (largeTradeFlow.confidence * .15).round()) +
+                (policyImpact == null
+                    ? 0
+                    : (policyImpact.confidence * .10).round()))
+            .clamp(0, 95)
+            .toInt();
+    final fallbackStopLossPercent = snapshot.atrPercent == null
+        ? switch (snapshot.riskScore) {
+            <= 2 => 1.8,
+            3 => 2.4,
+            4 => 3.2,
+            _ => 4.0,
+          }
+        : (snapshot.atrPercent! * 1.45).clamp(1.2, 4.5).toDouble();
     final stopLossPercent =
         crossExchangeAnalysis?.stopLossPercent ?? fallbackStopLossPercent;
     final takeProfitPercent =
         crossExchangeAnalysis?.takeProfitPercent ??
-        stopLossPercent * (score >= 70 ? 2.4 : 2.0);
-    final gateScore = (score * .7 + (100 - snapshot.riskScore * 14) * .3)
-        .round()
-        .clamp(0, 100)
-        .toInt();
+        stopLossPercent * (score >= 72 ? 2.2 : 2.0);
+    final gateScore =
+        (score * .68 + confidence * .12 + (100 - snapshot.riskScore * 14) * .20)
+            .round()
+            .clamp(0, 100)
+            .toInt();
     return _OpportunitySignal(
       snapshot: snapshot,
       side: side,
       score: score,
+      confidence: confidence,
       gateScore: gateScore,
       stopLossPercent: stopLossPercent,
       takeProfitPercent: takeProfitPercent,
       alignedTrendCount: alignedTrendCount,
+      strengths: strengths,
+      warnings: warnings,
       crossExchangeAnalysis: crossExchangeAnalysis,
+      policyImpact: policyImpact,
     );
   }
 
   final MarketSnapshot snapshot;
   final PositionSide side;
   final int score;
+  final int confidence;
   final int gateScore;
   final double stopLossPercent;
   final double takeProfitPercent;
   final int alignedTrendCount;
+  final List<String> strengths;
+  final List<String> warnings;
   final CrossExchangeAnalysis? crossExchangeAnalysis;
+  final PolicyImpact? policyImpact;
+
+  static int _momentumScore({
+    required double? rsi,
+    required double changePercent,
+    required PositionSide side,
+  }) {
+    var score = 8;
+    if (rsi != null) {
+      score = side == PositionSide.long
+          ? switch (rsi) {
+              < 30 => 5,
+              < 45 => 10,
+              <= 62 => 14,
+              <= 70 => 11,
+              _ => 3,
+            }
+          : switch (rsi) {
+              > 70 => 5,
+              > 55 => 10,
+              >= 38 => 14,
+              >= 30 => 11,
+              _ => 3,
+            };
+    }
+    final aligned = side == PositionSide.long
+        ? changePercent >= 0
+        : changePercent <= 0;
+    final magnitude = changePercent.abs();
+    if (aligned && magnitude <= 8) {
+      score += 4;
+    } else if (aligned && magnitude <= 15) {
+      score += 2;
+    } else if (!aligned && magnitude < 1) {
+      score += 1;
+    }
+    return score.clamp(0, 18).toInt();
+  }
+
+  static int _volumeScore(double? ratio) {
+    if (ratio == null) return 6;
+    if (ratio >= 1.4) return 15;
+    if (ratio >= 1.05) return 12;
+    if (ratio >= .8) return 8;
+    if (ratio >= .6) return 4;
+    return 1;
+  }
+
+  static double _positionInRange(MarketSnapshot snapshot) {
+    final range = snapshot.high24h - snapshot.low24h;
+    if (range <= 0) return .5;
+    return ((snapshot.price - snapshot.low24h) / range).clamp(0, 1).toDouble();
+  }
+
+  static int _positionScore(double position, PositionSide side) {
+    if (side == PositionSide.long) {
+      if (position >= .2 && position <= .65) return 10;
+      if (position < .2) return 6;
+      if (position <= .8) return 7;
+      if (position <= .9) return 3;
+      return 1;
+    }
+    if (position >= .35 && position <= .8) return 10;
+    if (position > .8) return 6;
+    if (position >= .2) return 7;
+    if (position >= .1) return 3;
+    return 1;
+  }
+
+  static int _volatilityScore(double? atrPercent) {
+    if (atrPercent == null) return 5;
+    if (atrPercent < .15) return 5;
+    if (atrPercent <= 1.2) return 10;
+    if (atrPercent <= 2.5) return 8;
+    if (atrPercent <= 4) return 4;
+    return 1;
+  }
+
+  static int _crossExchangeScore(CrossExchangeAnalysis? analysis) {
+    if (analysis == null) return 5;
+    final expected = math.max(analysis.expectedExchangeCount, 1);
+    final coverage = analysis.validExchangeCount / expected;
+    var score =
+        analysis.directionAgreement * .08 +
+        analysis.dataQualityScore * .04 +
+        coverage * 3;
+    if (analysis.hasReliableProbability) {
+      score += ((analysis.winProbability! - 50) * .12).clamp(-2, 2);
+    }
+    if (analysis.validExchangeCount < 3) score = math.min(score, 4);
+    return score.round().clamp(0, 15).toInt();
+  }
+
+  static int _largeTradeAdjustment(LargeTradeFlow? flow, PositionSide side) {
+    if (flow == null || flow.confidence < 45) return 0;
+    final aligned = side == PositionSide.long
+        ? flow.netFlowPercent
+        : -flow.netFlowPercent;
+    final confidenceWeight = flow.confidence / 100;
+    return (aligned * .10 * confidenceWeight).round().clamp(-8, 8).toInt();
+  }
+
+  static int _policyAdjustment(PolicyImpact? impact, PositionSide side) {
+    if (impact == null || !impact.isAvailable || impact.confidence < 45) {
+      return 0;
+    }
+    final aligned = side == PositionSide.long
+        ? impact.directionScore
+        : -impact.directionScore;
+    final confidenceWeight = impact.confidence / 100;
+    return (aligned * .10 * confidenceWeight).round().clamp(-7, 7).toInt();
+  }
+
+  static bool _isHealthyRsi(double? rsi, PositionSide side) {
+    if (rsi == null) return false;
+    return side == PositionSide.long
+        ? rsi >= 45 && rsi <= 68
+        : rsi >= 32 && rsi <= 55;
+  }
+
+  static bool _hasPositionRoom(double position, PositionSide side) {
+    return side == PositionSide.long
+        ? position >= .2 && position <= .72
+        : position >= .28 && position <= .8;
+  }
 
   double get entryPrice =>
       crossExchangeAnalysis?.consensusPrice ?? snapshot.price;
@@ -978,15 +1313,43 @@ class _OpportunitySignal {
 
   String get sideLabel => side == PositionSide.long ? '做多观察' : '做空观察';
 
+  String get metricLine {
+    final change = snapshot.changePercent;
+    final rsi = snapshot.rsi14;
+    final volume = snapshot.volumeRatio;
+    return '24h ${change >= 0 ? '+' : ''}${change.toStringAsFixed(2)}%'
+        ' · RSI ${rsi?.toStringAsFixed(0) ?? '--'}'
+        ' · 量能 ${volume == null ? '--' : '${volume.toStringAsFixed(2)}×'}';
+  }
+
+  String get reasonLine {
+    if (warnings.isNotEmpty) {
+      return '注意：${warnings.first} · ${strengths.first}';
+    }
+    return '加分：${strengths.take(2).join(' · ')}';
+  }
+
+  String get contextLine {
+    final flow = snapshot.largeTradeFlow;
+    final flowText = flow == null
+        ? '大额资金 --'
+        : '大额${flow.directionLabel} ${flow.netFlowPercent >= 0 ? '+' : ''}${flow.netFlowPercent.toStringAsFixed(0)}%';
+    final policyText = policyImpact == null || !policyImpact!.isAvailable
+        ? '政策 --'
+        : '政策${policyImpact!.directionLabel} · ${policyImpact!.riskLabel}';
+    return '$flowText · $policyText';
+  }
+
   String get actionLabel {
-    if (score >= 75 && gateScore >= 70) return '可进闸门';
-    if (score >= 60) return '等待确认';
-    return '暂不追价';
+    if (confidence < 65) return '数据不足';
+    if (score >= 76 && gateScore >= 70 && warnings.isEmpty) return '优先复核';
+    if (score >= 62) return '等待确认';
+    return '暂不参与';
   }
 
   Color get scoreColor {
-    if (score >= 75) return AppColors.teal;
-    if (score >= 60) return AppColors.amber;
+    if (score >= 76) return AppColors.teal;
+    if (score >= 62) return AppColors.amber;
     return AppColors.red;
   }
 }
@@ -1011,6 +1374,7 @@ class _OpportunityRadarCard extends StatelessWidget {
     required this.selectedIndex,
     required this.loading,
     required this.error,
+    required this.policyError,
     required this.onRetry,
     required this.onSelected,
   });
@@ -1019,6 +1383,7 @@ class _OpportunityRadarCard extends StatelessWidget {
   final int selectedIndex;
   final bool loading;
   final Object? error;
+  final Object? policyError;
   final Future<void> Function() onRetry;
   final ValueChanged<int> onSelected;
 
@@ -1031,7 +1396,9 @@ class _OpportunityRadarCard extends StatelessWidget {
         children: [
           _SectionHeader(
             title: '机会雷达',
-            subtitle: '按行情结构、波动和趋势一致度排序',
+            subtitle: policyError == null
+                ? '趋势、资金流、政策与跨所共识综合排序'
+                : '趋势与资金流综合排序 · 政策源暂不可用',
             icon: Icons.radar_rounded,
             trailing: loading
                 ? const SizedBox(
@@ -1170,7 +1537,6 @@ class _OpportunityRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final positive = signal.snapshot.changePercent >= 0;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1188,91 +1554,147 @@ class _OpportunityRow extends StatelessWidget {
                   : Colors.transparent,
             ),
           ),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(11),
-                ),
-                child: Text(
-                  TradingAssets.glyph(signal.snapshot.symbol),
-                  style: const TextStyle(
-                    color: AppColors.ink,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
+              Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Text(
+                      TradingAssets.glyph(signal.snapshot.symbol),
+                      style: const TextStyle(
+                        color: AppColors.ink,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          signal.snapshot.symbol,
-                          style: const TextStyle(
-                            color: AppColors.ink,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        Row(
+                          children: [
+                            Text(
+                              signal.snapshot.symbol,
+                              style: const TextStyle(
+                                color: AppColors.ink,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Text(
+                              signal.sideLabel,
+                              style: TextStyle(
+                                color: signal.side == PositionSide.long
+                                    ? AppColors.teal
+                                    : AppColors.red,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 7),
+                        const SizedBox(height: 3),
                         Text(
-                          signal.sideLabel,
-                          style: TextStyle(
-                            color: signal.side == PositionSide.long
-                                ? AppColors.teal
-                                : AppColors.red,
+                          signal.metricLine,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: AppColors.muted,
                             fontSize: 11,
-                            fontWeight: FontWeight.w500,
+                            fontWeight: FontWeight.w400,
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 3),
+                  ),
+                  const SizedBox(width: 10),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        '${signal.score}',
+                        style: TextStyle(
+                          color: signal.scoreColor,
+                          fontSize: 20,
+                          height: 1.1,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        signal.actionLabel,
+                        style: const TextStyle(
+                          color: AppColors.muted,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              if (selected) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      signal.warnings.isEmpty
+                          ? Icons.check_circle_outline_rounded
+                          : Icons.info_outline_rounded,
+                      size: 13,
+                      color: signal.warnings.isEmpty
+                          ? AppColors.teal
+                          : AppColors.amber,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        signal.contextLine,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: signal.warnings.isEmpty
+                              ? AppColors.teal
+                              : AppColors.muted,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     Text(
-                      '${signal.snapshot.state} · 24h ${positive ? '+' : ''}${signal.snapshot.changePercent.toStringAsFixed(2)}%',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      '数据置信 ${signal.confidence}',
                       style: const TextStyle(
                         color: AppColors.muted,
-                        fontSize: 11,
+                        fontSize: 10,
                         fontWeight: FontWeight.w400,
                       ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '${signal.score}',
-                    style: TextStyle(
-                      color: signal.scoreColor,
-                      fontSize: 20,
-                      height: 1.1,
-                      fontWeight: FontWeight.w500,
-                    ),
+                const SizedBox(height: 4),
+                Text(
+                  signal.reasonLine,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.muted,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w400,
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    signal.actionLabel,
-                    style: const TextStyle(
-                      color: AppColors.muted,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1289,6 +1711,38 @@ class _OpenGateCard extends StatelessWidget {
 
   List<_GateCheck> get _checks {
     final crossExchange = signal.crossExchangeAnalysis;
+    final largeFlow = signal.snapshot.largeTradeFlow;
+    final policy = signal.policyImpact;
+    final alignedLargeFlow = largeFlow == null
+        ? null
+        : signal.side == PositionSide.long
+        ? largeFlow.netFlowPercent
+        : -largeFlow.netFlowPercent;
+    final alignedPolicy = policy == null
+        ? null
+        : signal.side == PositionSide.long
+        ? policy.directionScore
+        : -policy.directionScore;
+    final externalState = policy != null && policy.eventRiskScore >= 65
+        ? _GateState.block
+        : largeFlow != null &&
+              largeFlow.confidence >= 55 &&
+              alignedLargeFlow! <= -18
+        ? _GateState.block
+        : policy != null &&
+              policy.isAvailable &&
+              policy.confidence >= 55 &&
+              alignedPolicy! <= -20
+        ? _GateState.watch
+        : largeFlow == null || policy == null || !policy.isAvailable
+        ? _GateState.watch
+        : _GateState.pass;
+    final externalDetail = largeFlow == null
+        ? '大额资金 --'
+        : '${largeFlow.directionLabel} ${largeFlow.netFlowPercent >= 0 ? '+' : ''}${largeFlow.netFlowPercent.toStringAsFixed(0)}%';
+    final policyDetail = policy == null || !policy.isAvailable
+        ? '政策 --'
+        : '政策${policy.directionLabel}';
     final range = signal.snapshot.high24h - signal.snapshot.low24h;
     final positionInRange = range <= 0
         ? .5
@@ -1337,6 +1791,11 @@ class _OpenGateCard extends StatelessWidget {
             : crossExchange.directionAgreement >= 67
             ? _GateState.pass
             : _GateState.watch,
+      ),
+      _GateCheck(
+        label: '外部环境',
+        detail: '$externalDetail · $policyDetail',
+        state: externalState,
       ),
       _GateCheck(
         label: '行为冷却',
@@ -1400,7 +1859,12 @@ class _OpenGateCard extends StatelessWidget {
                 Expanded(
                   child: _GateMetric(
                     label: '参考开仓',
-                    value: r'$' + formatPrice(signal.entryPrice),
+                    value:
+                        r'$' +
+                        formatPrice(
+                          signal.entryPrice,
+                          decimals: signal.snapshot.pricePrecision,
+                        ),
                     color: AppColors.ink,
                   ),
                 ),
@@ -1601,7 +2065,7 @@ class _RiskEngineCard extends StatelessWidget {
                   label: '止损亏损',
                   value: positionValue <= 0 ? '--' : formatUsdt(-estimatedLoss),
                   detail:
-                      '${_percent(signal.stopLossPercent)} · \$${formatPrice(signal.stopLossPrice)}',
+                      '${_percent(signal.stopLossPercent)} · \$${formatPrice(signal.stopLossPrice, decimals: signal.snapshot.pricePrecision)}',
                   color: AppColors.red,
                 ),
               ),
@@ -1613,7 +2077,7 @@ class _RiskEngineCard extends StatelessWidget {
                       ? '--'
                       : formatUsdt(estimatedProfit),
                   detail:
-                      '${_percent(signal.takeProfitPercent)} · \$${formatPrice(signal.takeProfitPrice)}',
+                      '${_percent(signal.takeProfitPercent)} · \$${formatPrice(signal.takeProfitPrice, decimals: signal.snapshot.pricePrecision)}',
                   color: AppColors.teal,
                 ),
               ),
@@ -2547,7 +3011,12 @@ class _AnalysisCard extends StatelessWidget {
               Expanded(
                 child: Metric(
                   label: '当前价格',
-                  value: r'$' + formatPrice(snapshot.price),
+                  value:
+                      r'$' +
+                      formatPrice(
+                        snapshot.price,
+                        decimals: snapshot.pricePrecision,
+                      ),
                 ),
               ),
               Expanded(
@@ -2571,7 +3040,11 @@ class _AnalysisCard extends StatelessWidget {
                   label: '关键支撑',
                   value: support == null
                       ? '--'
-                      : r'$' + formatPrice(support.price),
+                      : r'$' +
+                            formatPrice(
+                              support.price,
+                              decimals: snapshot.pricePrecision,
+                            ),
                   valueColor: AppColors.teal,
                 ),
               ),
@@ -2580,7 +3053,11 @@ class _AnalysisCard extends StatelessWidget {
                   label: '关键压力',
                   value: resistance == null
                       ? '--'
-                      : r'$' + formatPrice(resistance.price),
+                      : r'$' +
+                            formatPrice(
+                              resistance.price,
+                              decimals: snapshot.pricePrecision,
+                            ),
                   valueColor: AppColors.amber,
                 ),
               ),
@@ -2672,10 +3149,11 @@ class _FollowUpAnswer extends StatelessWidget {
         title = '关键支撑判断';
         final supportPrice = support?.price ?? current.low24h;
         answer =
-            '第一观察位在 ${formatPrice(supportPrice)} 附近'
+            '第一观察位在 ${formatPrice(supportPrice, decimals: current.pricePrecision)} 附近'
             '${support == null ? '' : '（${support.label}）'}。'
             '若有效跌破，需要重新评估多头结构；触及支撑不代表必须做多。';
-        tag = r'$' + formatPrice(supportPrice);
+        tag =
+            r'$' + formatPrice(supportPrice, decimals: current.pricePrecision);
       } else if (lower.contains('4小时') || lower.contains('4h')) {
         title = '4H 结构';
         final trend = _trendFor(current, '4小时');
@@ -2689,8 +3167,8 @@ class _FollowUpAnswer extends StatelessWidget {
             ? (current.high24h - current.low24h) / current.price * 100
             : 0.0;
         answer =
-            '24h 价格在 ${formatPrice(current.low24h)} – '
-            '${formatPrice(current.high24h)} 之间，振幅约 '
+            '24h 价格在 ${formatPrice(current.low24h, decimals: current.pricePrecision)} – '
+            '${formatPrice(current.high24h, decimals: current.pricePrecision)} 之间，振幅约 '
             '${rangePercent.toStringAsFixed(1)}%，波动属${current.riskLabel}水平。'
             '关键位附近多空换手会放大盘中波动。';
         tag = '振幅 ${rangePercent.toStringAsFixed(1)}%';

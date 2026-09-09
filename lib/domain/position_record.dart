@@ -17,6 +17,7 @@ class PositionRecord {
     this.realizedPercent,
     double? realizedAmount,
     this.closePrice,
+    this.pricePrecision,
   }) : _realizedAmount = realizedAmount;
 
   factory PositionRecord.fromJson(Map<String, dynamic> json) {
@@ -43,6 +44,7 @@ class PositionRecord {
       realizedPercent: (json['realizedPercent'] as num?)?.toDouble(),
       realizedAmount: (json['realizedAmount'] as num?)?.toDouble(),
       closePrice: (json['closePrice'] as num?)?.toDouble(),
+      pricePrecision: (json['pricePrecision'] as num?)?.toInt(),
     );
   }
 
@@ -59,6 +61,7 @@ class PositionRecord {
   final double? realizedPercent;
   final double? _realizedAmount;
   final double? closePrice;
+  final int? pricePrecision;
 
   double get stopLossPrice => side == PositionSide.long
       ? entryPrice * (1 - stopLossPercent / 100)
@@ -105,6 +108,7 @@ class PositionRecord {
       'realizedPercent': realizedPercent,
       'realizedAmount': realizedAmount,
       'closePrice': closePrice,
+      'pricePrecision': pricePrecision,
     };
   }
 
@@ -136,6 +140,7 @@ class PositionRecord {
           : realizedAmount ??
                 (realizedPercent != null ? null : _realizedAmount),
       closePrice: clearClosePrice ? null : closePrice ?? this.closePrice,
+      pricePrecision: pricePrecision,
     );
   }
 }

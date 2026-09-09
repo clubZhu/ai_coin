@@ -85,11 +85,11 @@ class BinanceCoinRecommendationRepository
     return recommendations.take(math.max(1, limit)).toList(growable: false);
   }
 
-  Set<String> _tradableAssets(Object? payload) {
+  Map<String, int> _tradableAssets(Object? payload) {
     if (payload is! Map || payload['symbols'] is! List) {
       throw const FormatException('交易对目录格式异常');
     }
-    final assets = <String>{};
+    final assets = <String, int>{};
     for (final row in payload['symbols'] as List) {
       if (row is! Map ||
           row['quoteAsset'] != 'USDT' ||
@@ -99,13 +99,16 @@ class BinanceCoinRecommendationRepository
       }
       final asset = row['baseAsset'];
       if (asset is String && _isAllowedAsset(asset)) {
-        assets.add(asset.toUpperCase());
+        assets[asset.toUpperCase()] = _pricePrecision(row);
       }
     }
     return assets;
   }
 
-  List<_TickerRow> _tickerRows(Object? payload, Set<String> tradableAssets) {
+  List<_TickerRow> _tickerRows(
+    Object? payload,
+    Map<String, int> tradableAssets,
+  ) {
     if (payload is! List) throw const FormatException('24h 行情格式异常');
     final rows = <_TickerRow>[];
     for (final value in payload) {
@@ -113,7 +116,8 @@ class BinanceCoinRecommendationRepository
       final pair = value['symbol'];
       if (pair is! String || !pair.endsWith('USDT')) continue;
       final asset = pair.substring(0, pair.length - 4).toUpperCase();
-      if (!tradableAssets.contains(asset)) continue;
+      final pricePrecision = tradableAssets[asset];
+      if (pricePrecision == null) continue;
       final price = _toDouble(value['lastPrice']);
       final high = _toDouble(value['highPrice']);
       final low = _toDouble(value['lowPrice']);
@@ -128,6 +132,7 @@ class BinanceCoinRecommendationRepository
           low: low,
           changePercent: change,
           quoteVolume: volume,
+          pricePrecision: pricePrecision,
         ),
       );
     }
@@ -211,6 +216,7 @@ class BinanceCoinRecommendationRepository
             ? CoinRecommendationLevel.focus
             : CoinRecommendationLevel.watch,
         reasons: reasons.take(2).toList(growable: false),
+        pricePrecision: ticker.pricePrecision,
       );
     } on Object {
       return null;
@@ -251,6 +257,25 @@ class BinanceCoinRecommendationRepository
     String text => double.tryParse(text) ?? 0,
     _ => 0,
   };
+
+  int _pricePrecision(Map<dynamic, dynamic> row) {
+    final filters = row['filters'];
+    if (filters is List) {
+      for (final filter in filters) {
+        if (filter is! Map || filter['filterType'] != 'PRICE_FILTER') continue;
+        final tickSize = '${filter['tickSize'] ?? ''}';
+        if (!tickSize.contains('.')) return 0;
+        return tickSize
+            .split('.')
+            .last
+            .replaceFirst(RegExp(r'0+$'), '')
+            .length
+            .clamp(0, 12)
+            .toInt();
+      }
+    }
+    return 8;
+  }
 }
 
 class _TickerRow {
@@ -261,6 +286,7 @@ class _TickerRow {
     required this.low,
     required this.changePercent,
     required this.quoteVolume,
+    required this.pricePrecision,
   });
 
   final String asset;
@@ -269,4 +295,5 @@ class _TickerRow {
   final double low;
   final double changePercent;
   final double quoteVolume;
+  final int pricePrecision;
 }

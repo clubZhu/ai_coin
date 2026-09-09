@@ -5,9 +5,27 @@ import 'package:flutter/material.dart';
 import '../domain/market_snapshot.dart';
 import 'app_theme.dart';
 
-String formatPrice(double value) {
-  final decimals = value < 10000 && value % 1 != 0 ? 1 : 0;
-  final fixed = value.toStringAsFixed(decimals);
+int adaptivePricePrecision(double value) {
+  final absolute = value.abs();
+  if (absolute == 0 || absolute >= 1000) return 0;
+  if (absolute >= 1) return 2;
+  if (absolute >= .1) return 4;
+  if (absolute >= .01) return 5;
+  if (absolute >= .001) return 6;
+  if (absolute >= .0001) return 7;
+  return 8;
+}
+
+String formatPrice(double value, {int? decimals}) {
+  final precision = (decimals ?? adaptivePricePrecision(value))
+      .clamp(0, 12)
+      .toInt();
+  var fixed = value.toStringAsFixed(precision);
+  if (decimals == null && fixed.contains('.')) {
+    fixed = fixed
+        .replaceFirst(RegExp(r'0+$'), '')
+        .replaceFirst(RegExp(r'\.$'), '');
+  }
   final parts = fixed.split('.');
   final digits = parts.first;
   final buffer = StringBuffer();
@@ -21,7 +39,7 @@ String formatPrice(double value) {
 
 String formatUsdt(double value) {
   final parts = value.abs().toStringAsFixed(2).split('.');
-  final whole = formatPrice(double.parse(parts.first));
+  final whole = formatPrice(double.parse(parts.first), decimals: 0);
   final sign = value > 0
       ? '+'
       : value < 0

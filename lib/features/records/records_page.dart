@@ -706,6 +706,7 @@ class _RecordCard extends StatelessWidget {
                 percent: percent,
                 priceLabel: isOpen ? '当前价格' : '平仓价格',
                 price: isOpen ? currentPrice : record.closePrice,
+                pricePrecision: record.pricePrecision,
               ),
               if (expanded) ...[
                 const SizedBox(height: 14),
@@ -715,7 +716,12 @@ class _RecordCard extends StatelessWidget {
                       flex: 5,
                       child: _RecordMeta(
                         label: '开仓价格',
-                        value: '\$' + formatPrice(record.entryPrice),
+                        value:
+                            '\$' +
+                            formatPrice(
+                              record.entryPrice,
+                              decimals: record.pricePrecision,
+                            ),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -747,6 +753,7 @@ class _RecordCard extends StatelessWidget {
                         label: '止损 ${_percent(record.stopLossPercent)}',
                         amount: -record.estimatedLoss,
                         price: record.stopLossPrice,
+                        pricePrecision: record.pricePrecision,
                         color: AppColors.red,
                       ),
                     ),
@@ -756,6 +763,7 @@ class _RecordCard extends StatelessWidget {
                         label: '止盈 ${_percent(record.takeProfitPercent)}',
                         amount: record.estimatedProfit,
                         price: record.takeProfitPrice,
+                        pricePrecision: record.pricePrecision,
                         color: AppColors.teal,
                       ),
                     ),
@@ -857,6 +865,7 @@ class _RecordResult extends StatelessWidget {
     required this.percent,
     required this.priceLabel,
     required this.price,
+    required this.pricePrecision,
   });
 
   final String label;
@@ -864,6 +873,7 @@ class _RecordResult extends StatelessWidget {
   final double? percent;
   final String priceLabel;
   final double? price;
+  final int? pricePrecision;
 
   @override
   Widget build(BuildContext context) {
@@ -934,7 +944,9 @@ class _RecordResult extends StatelessWidget {
                   fit: BoxFit.scaleDown,
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    price == null ? '--' : '\$' + formatPrice(price!),
+                    price == null
+                        ? '--'
+                        : '\$' + formatPrice(price!, decimals: pricePrecision),
                     style: _recordCaptionStyle.copyWith(color: AppColors.ink),
                   ),
                 ),
@@ -952,12 +964,14 @@ class _RecordTarget extends StatelessWidget {
     required this.label,
     required this.amount,
     required this.price,
+    required this.pricePrecision,
     required this.color,
   });
 
   final String label;
   final double amount;
   final double price;
+  final int? pricePrecision;
   final Color color;
 
   @override
@@ -984,7 +998,10 @@ class _RecordTarget extends StatelessWidget {
         FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
-          child: Text('\$${formatPrice(price)}', style: _recordCaptionStyle),
+          child: Text(
+            '\$${formatPrice(price, decimals: pricePrecision)}',
+            style: _recordCaptionStyle,
+          ),
         ),
       ],
     );
@@ -1021,7 +1038,7 @@ class _DeleteRecordDialog extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               '${record.symbol} · ${record.side == PositionSide.long ? '做多' : '做空'} · '
-              '开仓 \$${formatPrice(record.entryPrice)}，删除后无法恢复。',
+              '开仓 \$${formatPrice(record.entryPrice, decimals: record.pricePrecision)}，删除后无法恢复。',
               style: _recordCaptionStyle.copyWith(fontSize: 13),
             ),
             const SizedBox(height: 20),
@@ -1273,7 +1290,7 @@ class _EditRecordSheetState extends State<_EditRecordSheet> {
               ),
               const SizedBox(height: 5),
               Text(
-                '${widget.record.symbol} · ${widget.record.side == PositionSide.long ? '做多' : '做空'} · 开仓 ${formatPrice(widget.record.entryPrice)}',
+                '${widget.record.symbol} · ${widget.record.side == PositionSide.long ? '做多' : '做空'} · 开仓 ${formatPrice(widget.record.entryPrice, decimals: widget.record.pricePrecision)}',
                 style: _recordCaptionStyle,
               ),
               const SizedBox(height: 20),

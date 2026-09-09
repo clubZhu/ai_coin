@@ -10,6 +10,7 @@ class CoinRecommendation {
     required this.score,
     required this.level,
     required this.reasons,
+    required this.pricePrecision,
   });
 
   final String symbol;
@@ -20,6 +21,7 @@ class CoinRecommendation {
   final int score;
   final CoinRecommendationLevel level;
   final List<String> reasons;
+  final int pricePrecision;
 
   String get levelLabel => switch (level) {
     CoinRecommendationLevel.focus => '重点关注',

@@ -303,7 +303,11 @@ class _MarketPageState extends State<MarketPage> {
               ),
               const SizedBox(height: 25),
               Text(
-                r'$' + formatPrice(_displayPrice),
+                r'$' +
+                    formatPrice(
+                      _displayPrice,
+                      decimals: snapshot.pricePrecision,
+                    ),
                 key: ValueKey('market-price-${snapshot.symbol}'),
                 style: Theme.of(context).textTheme.displaySmall,
               ),
@@ -382,7 +386,12 @@ class _MarketPageState extends State<MarketPage> {
               Expanded(
                 child: Metric(
                   label: '24h 最高',
-                  value: r'$' + formatPrice(snapshot.high24h),
+                  value:
+                      r'$' +
+                      formatPrice(
+                        snapshot.high24h,
+                        decimals: snapshot.pricePrecision,
+                      ),
                 ),
               ),
               Container(width: 1, height: 38, color: AppColors.line),
@@ -391,7 +400,12 @@ class _MarketPageState extends State<MarketPage> {
                   padding: const EdgeInsets.only(left: 18),
                   child: Metric(
                     label: '24h 最低',
-                    value: r'$' + formatPrice(snapshot.low24h),
+                    value:
+                        r'$' +
+                        formatPrice(
+                          snapshot.low24h,
+                          decimals: snapshot.pricePrecision,
+                        ),
                   ),
                 ),
               ),
@@ -565,7 +579,12 @@ class _LevelCard extends StatelessWidget {
               Expanded(
                 child: _LevelTile(
                   label: '上方压力',
-                  value: r'$' + formatPrice(resistance.price),
+                  value:
+                      r'$' +
+                      formatPrice(
+                        resistance.price,
+                        decimals: snapshot.pricePrecision,
+                      ),
                   icon: Icons.vertical_align_top_rounded,
                 ),
               ),
@@ -573,7 +592,12 @@ class _LevelCard extends StatelessWidget {
               Expanded(
                 child: _LevelTile(
                   label: '下方支撑',
-                  value: r'$' + formatPrice(support.price),
+                  value:
+                      r'$' +
+                      formatPrice(
+                        support.price,
+                        decimals: snapshot.pricePrecision,
+                      ),
                   icon: Icons.vertical_align_bottom_rounded,
                 ),
               ),

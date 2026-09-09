@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
+import '../domain/market_context.dart';
 import '../domain/market_snapshot.dart';
 import '../domain/trading_assets.dart';
 import 'market_repository.dart';
@@ -14,6 +16,7 @@ class BinanceMarketRepository implements MarketRepository {
     JsonFetcher? fetcher,
     this.baseUrl = 'https://data-api.binance.vision',
     this.symbols = TradingAssets.symbols,
+    this.pricePrecisions = const {},
   }) : _fetcher = fetcher ?? _httpFetcher;
 
   static const _trendConfigs = [
@@ -25,6 +28,7 @@ class BinanceMarketRepository implements MarketRepository {
 
   final String baseUrl;
   final List<String> symbols;
+  final Map<String, int> pricePrecisions;
   final JsonFetcher _fetcher;
 
   static Future<Object?> _httpFetcher(Uri url) async {
@@ -71,6 +75,9 @@ class BinanceMarketRepository implements MarketRepository {
     final pair = '${symbol.toUpperCase()}USDT';
     final responses = await Future.wait<Object?>([
       _fetcher(_uri('/api/v3/ticker/24hr', {'symbol': pair})),
+      _optionalFetch(
+        _uri('/api/v3/aggTrades', {'symbol': pair, 'limit': '1000'}),
+      ),
       for (final config in _trendConfigs)
         _fetcher(
           _uri('/api/v3/klines', {
@@ -82,7 +89,11 @@ class BinanceMarketRepository implements MarketRepository {
     ]);
 
     final ticker = _asMap(responses.first);
-    final trendCloses = responses.skip(1).map(_closes).toList();
+    final largeTradeFlow = _largeTradeFlow(responses[1]);
+    final candleGroups = responses.skip(2).map(_candles).toList();
+    final trendCloses = candleGroups
+        .map((candles) => candles.map((candle) => candle.close).toList())
+        .toList();
     final trends = <TimeframeTrend>[
       for (var index = 0; index < _trendConfigs.length; index++)
         _trend(
@@ -93,10 +104,17 @@ class BinanceMarketRepository implements MarketRepository {
     ];
 
     final price = _toDouble(ticker['lastPrice']);
+    final pricePrecision =
+        pricePrecisions[symbol.toUpperCase()] ??
+        _decimalPlaces('${ticker['lastPrice']}');
     final changePercent = _toDouble(ticker['priceChangePercent']);
     final high24h = _toDouble(ticker['highPrice']);
     final low24h = _toDouble(ticker['lowPrice']);
     final quoteVolume = _toDouble(ticker['quoteVolume']);
+    final shortCandles = candleGroups.first;
+    final rsi14 = _rsi14(shortCandles);
+    final volumeRatio = _volumeRatio(shortCandles);
+    final atrPercent = _atrPercent(shortCandles);
 
     final dominant = _dominantDirection(trends);
     final consistency = _consistency(trends, dominant);
@@ -134,42 +152,67 @@ class BinanceMarketRepository implements MarketRepository {
       low24h: low24h,
       volume24h: _formatVolume(quoteVolume),
       explanation:
-          '$symbol 报价 \$${_formatPrice(price)}，24h${changePercent >= 0 ? '上涨' : '下跌'} '
+          '$symbol 报价 \$${_formatPrice(price, pricePrecision)}，24h${changePercent >= 0 ? '上涨' : '下跌'} '
           '${changePercent.abs().toStringAsFixed(2)}%，运行区间 '
-          '\$${_formatPrice(low24h)} – \$${_formatPrice(high24h)}。'
+          '\$${_formatPrice(low24h, pricePrecision)} – \$${_formatPrice(high24h, pricePrecision)}。'
           '短线${trends.first.label}、日线${trends.last.label}，'
           '多周期一致度 $consistency%，24h 波动属$riskLabel水平。',
+      pricePrecision: pricePrecision,
+      rsi14: rsi14,
+      volumeRatio: volumeRatio,
+      atrPercent: atrPercent,
+      largeTradeFlow: largeTradeFlow,
     );
+  }
+
+  Future<Object?> _optionalFetch(Uri uri) async {
+    try {
+      return await _fetcher(uri);
+    } on Object {
+      return null;
+    }
   }
 
   Uri _uri(String path, Map<String, String> query) =>
       Uri.parse(baseUrl + path).replace(queryParameters: query);
 
   TimeframeTrend _trend(String period, List<double> closes, double threshold) {
-    if (closes.length < 10) {
+    if (closes.length < 21) {
       return TimeframeTrend(
         period: period,
         label: '震荡',
         direction: TrendDirection.flat,
       );
     }
-    final baseline = _sma(closes.sublist(closes.length - 9));
-    final change = (closes.last - baseline) / baseline * 100;
-    final direction = change > threshold
+    final fast = _ema(closes, 9);
+    final slow = _ema(closes, 21);
+    final recent = closes[closes.length - 5];
+    final spread = slow == 0 ? 0.0 : (fast - slow) / slow * 100;
+    final recentChange = recent == 0
+        ? 0.0
+        : (closes.last - recent) / recent * 100;
+    final strength = spread * .7 + recentChange * .3;
+    final direction = strength > threshold
         ? TrendDirection.up
-        : change < -threshold
+        : strength < -threshold
         ? TrendDirection.down
         : TrendDirection.flat;
     final label = switch (direction) {
-      TrendDirection.up => change > threshold * 3 ? '上涨' : '反弹',
-      TrendDirection.down => change < -threshold * 3 ? '下跌' : '回调',
+      TrendDirection.up => strength > threshold * 3 ? '上涨' : '反弹',
+      TrendDirection.down => strength < -threshold * 3 ? '下跌' : '回调',
       TrendDirection.flat => '震荡',
     };
     return TimeframeTrend(period: period, label: label, direction: direction);
   }
 
-  double _sma(List<double> values) =>
-      values.reduce((total, value) => total + value) / values.length;
+  double _ema(List<double> values, int period) {
+    final multiplier = 2 / (period + 1);
+    var value = values.first;
+    for (final next in values.skip(1)) {
+      value = (next - value) * multiplier + value;
+    }
+    return value;
+  }
 
   TrendDirection _dominantDirection(List<TimeframeTrend> trends) {
     final counts = {
@@ -212,10 +255,8 @@ class BinanceMarketRepository implements MarketRepository {
     return '\$${quoteVolume.toStringAsFixed(0)}';
   }
 
-  String _formatPrice(double value) {
-    final fixed = value >= 1000
-        ? value.toStringAsFixed(0)
-        : value.toStringAsFixed(2);
+  String _formatPrice(double value, int precision) {
+    final fixed = value.toStringAsFixed(precision.clamp(0, 12).toInt());
     final digits = fixed.split('.').first;
     final buffer = StringBuffer();
     for (var index = 0; index < digits.length; index++) {
@@ -227,21 +268,188 @@ class BinanceMarketRepository implements MarketRepository {
     return buffer.toString();
   }
 
+  int _decimalPlaces(String value) {
+    if (!value.contains('.')) return 0;
+    return value
+        .split('.')
+        .last
+        .replaceFirst(RegExp(r'0+$'), '')
+        .length
+        .clamp(0, 12)
+        .toInt();
+  }
+
   Map<String, dynamic> _asMap(Object? payload) {
     if (payload is Map<String, dynamic>) return payload;
     throw const FormatException('币安行情数据格式异常');
   }
 
   List<double> _closes(Object? payload) {
+    return _candles(payload).map((candle) => candle.close).toList();
+  }
+
+  List<_Candle> _candles(Object? payload) {
     if (payload is! List) throw const FormatException('币安 K 线数据格式异常');
-    final closes = <double>[];
+    final candles = <_Candle>[];
     for (final row in payload) {
-      if (row is! List || row.length < 5) continue;
+      if (row is! List || row.length < 8) continue;
+      final high = double.tryParse('${row[2]}');
+      final low = double.tryParse('${row[3]}');
       final close = double.tryParse('${row[4]}');
-      if (close != null) closes.add(close);
+      final quoteVolume = double.tryParse('${row[7]}');
+      if (high == null || low == null || close == null || quoteVolume == null) {
+        continue;
+      }
+      candles.add(
+        _Candle(high: high, low: low, close: close, quoteVolume: quoteVolume),
+      );
     }
-    if (closes.isEmpty) throw const FormatException('币安 K 线数据为空');
-    return closes;
+    if (candles.isEmpty) throw const FormatException('币安 K 线数据为空');
+    return candles;
+  }
+
+  double? _rsi14(List<_Candle> candles) {
+    if (candles.length < 15) return null;
+    var averageGain = 0.0;
+    var averageLoss = 0.0;
+    for (var index = 1; index <= 14; index++) {
+      final change = candles[index].close - candles[index - 1].close;
+      if (change >= 0) {
+        averageGain += change;
+      } else {
+        averageLoss -= change;
+      }
+    }
+    averageGain /= 14;
+    averageLoss /= 14;
+    for (var index = 15; index < candles.length; index++) {
+      final change = candles[index].close - candles[index - 1].close;
+      final gain = math.max(change, 0);
+      final loss = math.max(-change, 0);
+      averageGain = (averageGain * 13 + gain) / 14;
+      averageLoss = (averageLoss * 13 + loss) / 14;
+    }
+    if (averageLoss == 0) return 100;
+    if (averageGain == 0) return 0;
+    final relativeStrength = averageGain / averageLoss;
+    return 100 - 100 / (1 + relativeStrength);
+  }
+
+  double? _volumeRatio(List<_Candle> candles) {
+    if (candles.length < 32) return null;
+    final recent = candles.sublist(candles.length - 8);
+    final baseline = candles.sublist(candles.length - 32, candles.length - 8);
+    final recentAverage =
+        recent.fold<double>(0, (sum, candle) => sum + candle.quoteVolume) /
+        recent.length;
+    final baselineAverage =
+        baseline.fold<double>(0, (sum, candle) => sum + candle.quoteVolume) /
+        baseline.length;
+    if (baselineAverage <= 0) return null;
+    return (recentAverage / baselineAverage).clamp(0, 9).toDouble();
+  }
+
+  double? _atrPercent(List<_Candle> candles) {
+    if (candles.length < 15 || candles.last.close <= 0) return null;
+    var atr = 0.0;
+    for (var index = 1; index <= 14; index++) {
+      final candle = candles[index];
+      final previousClose = candles[index - 1].close;
+      atr += math.max(
+        candle.high - candle.low,
+        math.max(
+          (candle.high - previousClose).abs(),
+          (candle.low - previousClose).abs(),
+        ),
+      );
+    }
+    atr /= 14;
+    for (var index = 15; index < candles.length; index++) {
+      final candle = candles[index];
+      final previousClose = candles[index - 1].close;
+      final trueRange = math.max(
+        candle.high - candle.low,
+        math.max(
+          (candle.high - previousClose).abs(),
+          (candle.low - previousClose).abs(),
+        ),
+      );
+      atr = (atr * 13 + trueRange) / 14;
+    }
+    return atr / candles.last.close * 100;
+  }
+
+  LargeTradeFlow? _largeTradeFlow(Object? payload) {
+    if (payload is! List) return null;
+    final trades = <_AggregateTrade>[];
+    for (final raw in payload) {
+      if (raw is! Map) continue;
+      final price = double.tryParse('${raw['p']}');
+      final quantity = double.tryParse('${raw['q']}');
+      final time = int.tryParse('${raw['T']}');
+      final buyerIsMaker = raw['m'];
+      if (price == null ||
+          quantity == null ||
+          time == null ||
+          buyerIsMaker is! bool ||
+          price <= 0 ||
+          quantity <= 0) {
+        continue;
+      }
+      trades.add(
+        _AggregateTrade(
+          notional: price * quantity,
+          takerBuy: !buyerIsMaker,
+          time: time,
+        ),
+      );
+    }
+    if (trades.length < 20) return null;
+
+    final notionals = trades.map((trade) => trade.notional).toList()..sort();
+    final thresholdIndex = (notionals.length * .9)
+        .floor()
+        .clamp(0, notionals.length - 1)
+        .toInt();
+    final threshold = notionals[thresholdIndex];
+    final largeTrades = trades
+        .where((trade) => trade.notional >= threshold)
+        .toList();
+    if (largeTrades.isEmpty) return null;
+
+    final totalNotional = trades.fold<double>(
+      0,
+      (sum, trade) => sum + trade.notional,
+    );
+    var largeBuy = 0.0;
+    var largeSell = 0.0;
+    for (final trade in largeTrades) {
+      if (trade.takerBuy) {
+        largeBuy += trade.notional;
+      } else {
+        largeSell += trade.notional;
+      }
+    }
+    final largeTotal = largeBuy + largeSell;
+    if (largeTotal <= 0 || totalNotional <= 0) return null;
+    final earliest = trades.map((trade) => trade.time).reduce(math.min);
+    final latest = trades.map((trade) => trade.time).reduce(math.max);
+    final windowMinutes = math.max(0, latest - earliest) / 60000;
+    final sampleCoverage = math.min(trades.length / 500, 1.0);
+    final timeCoverage = math.min(windowMinutes / 5, 1.0);
+    final largeCoverage = math.min(largeTrades.length / 60, 1.0);
+    final confidence =
+        (20 + sampleCoverage * 40 + timeCoverage * 20 + largeCoverage * 20)
+            .round()
+            .clamp(0, 95)
+            .toInt();
+    return LargeTradeFlow(
+      netFlowPercent: (largeBuy - largeSell) / largeTotal * 100,
+      largeTradeSharePercent: largeTotal / totalNotional * 100,
+      sampleCount: trades.length,
+      windowMinutes: windowMinutes,
+      confidence: confidence,
+    );
   }
 
   double _toDouble(Object? value) {
@@ -249,4 +457,30 @@ class BinanceMarketRepository implements MarketRepository {
     if (parsed == null) throw const FormatException('币安行情数值解析失败');
     return parsed;
   }
+}
+
+class _Candle {
+  const _Candle({
+    required this.high,
+    required this.low,
+    required this.close,
+    required this.quoteVolume,
+  });
+
+  final double high;
+  final double low;
+  final double close;
+  final double quoteVolume;
+}
+
+class _AggregateTrade {
+  const _AggregateTrade({
+    required this.notional,
+    required this.takerBuy,
+    required this.time,
+  });
+
+  final double notional;
+  final bool takerBuy;
+  final int time;
 }

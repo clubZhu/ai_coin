@@ -498,7 +498,7 @@ class _RecommendationCard extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  '\$${formatPrice(recommendation.price)}',
+                  '\$${formatPrice(recommendation.price, decimals: recommendation.pricePrecision)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(

@@ -145,6 +145,7 @@ class PublicCrossExchangeRepository implements CrossExchangeRepository {
       stopLossPercent: stopLossPercent,
       takeProfitPercent: takeProfitPercent,
       unavailableReason: unavailableReason,
+      pricePrecision: snapshot.pricePrecision,
     );
   }
 
